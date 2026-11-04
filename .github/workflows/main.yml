@@ -1,13 +1,49 @@
-- name: Godot-Unsigned-IOS
-  # You may pin to the exact commit or the version.
-  # uses: gamekiller2048/Godot-Unsigned-IOS@f6de848b8b57d799fde69d2d40eea24c9a490c44
-  uses: gamekiller2048/Godot-Unsigned-IOS@v2.0.1
-  with:
-    # The version of Godot downloaded.
-    godot-version: # optional, default is 4.7.1
-    # The flavor of Godot downloaded.
-    godot-flavor: # optional, default is stable
-    # The name of the Xcode project and generated IPA.
-    export-name: # optional, default is my-ios-project
-    # The configuration of both the godot export and xcode build. Can be release|debug.
-    configuration: # optional, default is release
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned, generic iOS device)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project TVBox.xcodeproj \
+            -scheme TVBox \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/TVBox.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES | tee build.log
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/TVBox.xcarchive/Products/Applications/TVBox.app" build/Payload/
+          cd build
+          zip -qry TVBox-unsigned.ipa Payload
+          ls -lh TVBox-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TVBox-unsigned-ipa
+          path: build/TVBox-unsigned.ipa
+          retention-days: 30
