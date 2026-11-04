@@ -1,7 +1,17 @@
 import SwiftUI
+import UIKit
+
+// 方向锁实现：App 层根据 OrientationState.mask 返回支持的方向
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        OrientationState.mask
+    }
+}
 
 @main
 struct TVBoxApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState()
 
     var body: some Scene {
