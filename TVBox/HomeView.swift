@@ -124,6 +124,7 @@ struct HomeView: View {
     }
 
     // 分类横条：点击进入独立分类页（该分类下的影片）
+    // 注意：NavigationLink 的 label 里不能再嵌 Button（会截获点击导致无反应），用纯视觉 ChipLabel
     private var categoryBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -132,7 +133,7 @@ struct HomeView: View {
                         NavigationLink {
                             CategoryView(site: site, category: cat)
                         } label: {
-                            CategoryChip(text: cat.typeName, selected: false, action: {})
+                            ChipLabel(text: cat.typeName, selected: false)
                         }
                         .buttonStyle(.plain)
                     }
@@ -208,15 +209,25 @@ struct CategoryChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(text)
-                .font(.system(size: 13))
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(selected ? Color.red : Color(white: 0.15))
-                .foregroundColor(.white)
-                .clipShape(Capsule())
+            ChipLabel(text: text, selected: selected)
         }
+    }
+}
+
+/// 纯视觉胶囊标签（不含 Button，可安全放在 NavigationLink label 里）
+struct ChipLabel: View {
+    let text: String
+    let selected: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13))
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(selected ? Color.red : Color(white: 0.15))
+            .foregroundColor(.white)
+            .clipShape(Capsule())
     }
 }
 
