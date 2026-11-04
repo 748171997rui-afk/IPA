@@ -1,9 +1,13 @@
-- name: Expo-Unsigned-IPA
+- name: Godot-Unsigned-IOS
   # You may pin to the exact commit or the version.
-  # uses: gamekiller2048/Expo-Unsigned-IPA@4228e289556fca6253e400123b7e3d3832483541
-  uses: gamekiller2048/Expo-Unsigned-IPA@v1
+  # uses: gamekiller2048/Godot-Unsigned-IOS@f6de848b8b57d799fde69d2d40eea24c9a490c44
+  uses: gamekiller2048/Godot-Unsigned-IOS@v2.0.1
   with:
-    # name of expo project
-    PROJECT_NAME: 
-    # whether to clear the last cache
-    CLEAR_CACHE: # optional, default is false
+    # The version of Godot downloaded.
+    godot-version: # optional, default is 4.7.1
+    # The flavor of Godot downloaded.
+    godot-flavor: # optional, default is stable
+    # The name of the Xcode project and generated IPA.
+    export-name: # optional, default is my-ios-project
+    # The configuration of both the godot export and xcode build. Can be release|debug.
+    configuration: # optional, default is release
