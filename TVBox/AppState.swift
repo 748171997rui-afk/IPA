@@ -26,9 +26,16 @@ final class AppState: ObservableObject {
     @Published var listLoading = false
     @Published var listError: String?
 
-    // 搜索
-    @Published var searchResults: [VodItem] = []
+    // 聚合搜索（并发搜所有源，结果带来源站点）
+    @Published var searchResults: [SearchHit] = []
     @Published var searching = false
+
+    /// 跨源搜索结果条目：记录来源站点，详情/播放按该站点请求
+    struct SearchHit: Identifiable {
+        let site: Site
+        let item: VodItem
+        var id: String { site.key + "_" + item.vodId }
+    }
 
     init() {
         let saved = UserDefaults.standard.string(forKey: apiDefaultsKey)
@@ -126,20 +133,34 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 聚合搜索：并发请求所有源，合并结果（每源限量 20 条）
     func search(_ keyword: String) async {
-        guard let site = selectedSite, !keyword.isEmpty else { return }
+        let targets = sites
+        guard !keyword.isEmpty, !targets.isEmpty else { return }
         searching = true
         defer { searching = false }
-        do {
-            let resp = try await ApiClient.shared.getVodList(api: site.api, keyword: keyword)
-            searchResults = resp.list
-        } catch {
-            searchResults = []
+        var hits: [SearchHit] = []
+        await withTaskGroup(of: [SearchHit].self) { group in
+            for site in targets {
+                group.addTask { [targets] in
+                    guard targets.contains(where: { $0.key == site.key }) else { return [] }
+                    do {
+                        let resp = try await ApiClient.shared.getVodList(api: site.api, keyword: keyword)
+                        return resp.list.prefix(20).map { SearchHit(site: site, item: $0) }
+                    } catch {
+                        return []
+                    }
+                }
+            }
+            for await part in group {
+                hits.append(contentsOf: part)
+            }
         }
+        searchResults = hits
     }
 
-    func getDetail(_ item: VodItem) async -> VodItem? {
-        guard let site = selectedSite else { return nil }
+    func getDetail(_ item: VodItem, site overrideSite: Site? = nil) async -> VodItem? {
+        guard let site = overrideSite ?? selectedSite else { return nil }
         return try? await ApiClient.shared.getVodList(api: site.api, ids: item.vodId).list.first
     }
 

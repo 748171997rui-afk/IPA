@@ -8,6 +8,8 @@ struct PlayerItem: Identifiable {
 struct DetailView: View {
     @EnvironmentObject var state: AppState
     let vodItem: VodItem
+    /// 聚合搜索结果的来源站点；nil = 当前选中源
+    var sourceSite: Site? = nil
 
     @State private var detail: VodItem?
     @State private var loading = true
@@ -132,7 +134,7 @@ struct DetailView: View {
     private func load() async {
         loading = true
         errorText = nil
-        if let d = await state.getDetail(vodItem) {
+        if let d = await state.getDetail(vodItem, site: sourceSite) {
             detail = d
         } else {
             errorText = "加载详情失败"

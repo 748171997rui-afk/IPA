@@ -12,7 +12,7 @@ struct SearchView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
-                    TextField("搜索 \(state.selectedSite?.name ?? "") 的影视…", text: $keyword)
+                    TextField("聚合搜索全部源…", text: $keyword)
                         .textFieldStyle(.roundedBorder)
                         .submitLabel(.search)
                         .onSubmit { Task { await doSearch() } }
@@ -45,22 +45,37 @@ struct SearchView: View {
             Spacer()
         } else if state.searchResults.isEmpty {
             Spacer()
-            Text(searched ? "没有找到相关内容" : "输入关键词开始搜索")
+            Text(searched ? "全部源都没有找到相关内容" : "聚合搜索：同时搜索 \(state.sites.count) 个源")
                 .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
             Spacer()
         } else {
             ScrollView {
+                Text("共 \(state.searchResults.count) 条结果")
+                    .font(.footnote)
+                    .foregroundColor(.gray)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
                 LazyVGrid(columns: columns, spacing: 14) {
-                    ForEach(state.searchResults) { vod in
+                    ForEach(state.searchResults) { hit in
                         NavigationLink {
-                            DetailView(vodItem: vod)
+                            DetailView(vodItem: hit.item, sourceSite: hit.site)
                         } label: {
-                            PosterCard(vod: vod)
+                            VStack(alignment: .leading, spacing: 4) {
+                                PosterCard(vod: hit.item)
+                                Text(hit.site.name)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.red)
+                                    .lineLimit(1)
+                            }
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 12)
+                .padding(.bottom, 16)
             }
         }
     }
