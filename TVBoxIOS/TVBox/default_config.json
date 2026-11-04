@@ -1,0 +1,8 @@
+{
+  "sites": [
+    {"key": "bfzy", "name": "暴风", "type": 1, "api": "https://bfzyapi.com/api.php/provide/vod", "searchable": 1},
+    {"key": "snzy", "name": "索尼", "type": 1, "api": "https://suoniapi.com/api.php/provide/vod", "searchable": 1},
+    {"key": "lzzy", "name": "量子", "type": 1, "api": "https://cj.lziapi.com/api.php/provide/vod", "searchable": 1},
+    {"key": "ffzy", "name": "非凡", "type": 1, "api": "http://cj.ffzyapi.com/api.php/provide/vod", "searchable": 1}
+  ]
+}
