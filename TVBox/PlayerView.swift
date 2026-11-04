@@ -2,7 +2,7 @@ import SwiftUI
 import AVKit
 import UIKit
 
-// 全局方向锁：默认竖屏，播放页全屏时切横屏
+// 全局方向锁：默认竖屏，播放页横屏
 final class OrientationState {
     static var mask: UIInterfaceOrientationMask = .portrait
 }
@@ -13,6 +13,8 @@ enum OrientationHelper {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         for scene in scenes {
             scene.requestGeometryUpdate(.iOS(interfaceOrientations: OrientationState.mask))
+            // 关键配套调用：通知根控制器方向约束已变化（UIViewController 上的复数方法）
+            scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
         }
     }
 }
@@ -20,7 +22,6 @@ enum OrientationHelper {
 struct PlayerView: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
-    @State private var isFullscreen = false
     @State private var controlsVisible = true
 
     var body: some View {
@@ -30,12 +31,10 @@ struct PlayerView: View {
                 .ignoresSafeArea()
 
             if controlsVisible {
-                // 顶部：返回按钮
                 VStack {
                     HStack {
                         Button {
-                            exitFullscreenIfNeeded()
-                            dismiss()
+                            close()
                         } label: {
                             Image(systemName: "chevron.down")
                                 .font(.title2.bold())
@@ -49,24 +48,6 @@ struct PlayerView: View {
                     .padding(.top, 8)
                     .padding(.leading, 12)
                     Spacer()
-                    // 底部：全屏切换按钮
-                    HStack {
-                        Spacer()
-                        Button {
-                            toggleFullscreen()
-                        } label: {
-                            Image(systemName: isFullscreen
-                                  ? "arrow.down.right.and.arrow.up.left"
-                                  : "arrow.up.left.and.arrow.down.right")
-                                .font(.title3.bold())
-                                .foregroundColor(.white)
-                                .padding(10)
-                                .background(Color.black.opacity(0.5))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                        .padding(.trailing, 16)
-                        .padding(.bottom, 10)
-                    }
                 }
                 .transition(.opacity)
             }
@@ -79,20 +60,19 @@ struct PlayerView: View {
             if controlsVisible { scheduleAutoHide() }
         }
         .onAppear { scheduleAutoHide() }
-        .onDisappear { exitFullscreenIfNeeded() }
-    }
-
-    private func toggleFullscreen() {
-        isFullscreen.toggle()
-        OrientationHelper.setLandscape(isFullscreen)
-    }
-
-    private func exitFullscreenIfNeeded() {
-        if isFullscreen {
-            isFullscreen = false
+        .onDisappear {
+            // 兜底：任何路径退出都恢复竖屏
             OrientationHelper.setLandscape(false)
         }
-        OrientationState.mask = .portrait
+    }
+
+    private func close() {
+        controlsVisible = true
+        // 先转回竖屏，再收起播放页（避免 dismissal 后窗口才旋转）
+        OrientationHelper.setLandscape(false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            dismiss()
+        }
     }
 
     private func scheduleAutoHide() {

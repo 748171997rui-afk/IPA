@@ -107,7 +107,11 @@ struct DetailView: View {
                     ForEach(source.episodes) { ep in
                         Button {
                             if let u = URL(string: ep.url) {
-                                playItem = PlayerItem(url: u)
+                                // 先转横屏，窗口旋转后再弹出全屏播放页
+                                OrientationHelper.setLandscape(true)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                    playItem = PlayerItem(url: u)
+                                }
                             }
                         } label: {
                             Text(ep.name)
