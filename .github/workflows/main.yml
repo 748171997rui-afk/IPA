@@ -12,6 +12,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize layout (find project.yml anywhere)
+        run: |
+          if [ ! -f project.yml ]; then
+            sub=$(find . -maxdepth 4 -name project.yml -not -path "./.git/*" | head -1)
+            if [ -n "$sub" ]; then
+              sub_dir=$(dirname "$sub")
+              echo "Found project.yml in $sub_dir, copying to repo root"
+              cp -R "$sub_dir"/. .
+            fi
+          fi
+          if [ ! -f project.yml ]; then
+            echo "::error::仓库里找不到 project.yml，请确认已上传 TVBoxIOS 的全部内容（project.yml、TVBox/ 文件夹等）"
+            find . -maxdepth 3 -not -path "./.git*" | head -50
+            exit 1
+          fi
+          ls -la
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
