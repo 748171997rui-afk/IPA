@@ -13,7 +13,7 @@ enum OrientationHelper {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         for scene in scenes {
             scene.requestGeometryUpdate(.iOS(interfaceOrientations: OrientationState.mask))
-            scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientation()
+            scene.windows.first?.setNeedsUpdateOfSupportedInterfaceOrientation()
         }
     }
 }
