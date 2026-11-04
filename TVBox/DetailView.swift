@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct PlayerItem: Identifiable {
-    let url: URL?
-    var id: String { url?.absoluteString ?? UUID().uuidString }
+    let url: URL
+    var id: String { url.absoluteString }
 }
 
 struct DetailView: View {
@@ -104,7 +104,9 @@ struct DetailView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 8)], spacing: 8) {
                     ForEach(source.episodes) { ep in
                         Button {
-                            playItem = PlayerItem(url: URL(string: ep.url))
+                            if let u = URL(string: ep.url) {
+                                playItem = PlayerItem(url: u)
+                            }
                         } label: {
                             Text(ep.name)
                                 .font(.system(size: 13))
