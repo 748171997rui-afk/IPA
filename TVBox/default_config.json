@@ -3,6 +3,11 @@
     {"key": "bfzy", "name": "暴风", "type": 1, "api": "https://bfzyapi.com/api.php/provide/vod", "searchable": 1},
     {"key": "snzy", "name": "索尼", "type": 1, "api": "https://suoniapi.com/api.php/provide/vod", "searchable": 1},
     {"key": "lzzy", "name": "量子", "type": 1, "api": "https://cj.lziapi.com/api.php/provide/vod", "searchable": 1},
-    {"key": "ffzy", "name": "非凡", "type": 1, "api": "http://cj.ffzyapi.com/api.php/provide/vod", "searchable": 1}
+    {"key": "ffzy", "name": "非凡", "type": 1, "api": "http://cj.ffzyapi.com/api.php/provide/vod", "searchable": 1},
+    {"key": "zy360", "name": "360", "type": 1, "api": "https://360zy.com/api.php/provide/vod", "searchable": 1},
+    {"key": "ikun", "name": "ikun", "type": 1, "api": "https://ikunzyapi.com/api.php/provide/vod", "searchable": 1},
+    {"key": "sdzy", "name": "闪电", "type": 1, "api": "https://sdzyapi.com/api.php/provide/vod", "searchable": 1},
+    {"key": "hongniu", "name": "红牛", "type": 1, "api": "https://www.hongniuzy2.com/api.php/provide/vod", "searchable": 1},
+    {"key": "uku", "name": "U酷", "type": 1, "api": "http://api.ukuapi88.com/api.php/provide/vod", "searchable": 1}
   ]
 }
