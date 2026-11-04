@@ -122,13 +122,14 @@ struct VodListResponse: Decodable {
         classes = (try? c.decode([VodClass].self, forKey: .classes)) ?? []
         if let l = try? c.decode([VodItem].self, forKey: .list) {
             list = l
+            pagecount = (try? c.decode(Int.self, forKey: .pagecount)) ?? 1
         } else if let d = try? c.decode(VodListResponse.self, forKey: .data) {
             list = d.list
             pagecount = d.pagecount
         } else {
             list = []
+            pagecount = 1
         }
-        pagecount = (try? c.decode(Int.self, forKey: .pagecount)) ?? 1
     }
 }
 
