@@ -19,7 +19,6 @@ final class AppState: ObservableObject {
     // 当前源
     @Published var selectedSite: Site?
     @Published var categories: [VodClass] = []
-    @Published var selectedCategory: VodClass?
     @Published var vods: [VodItem] = []
     @Published var page = 1
     @Published var totalPages = 1
@@ -74,7 +73,6 @@ final class AppState: ObservableObject {
     func selectSite(_ site: Site) async {
         selectedSite = site
         categories = []
-        selectedCategory = nil
         listError = nil
         listLoading = true
         defer { listLoading = false }
@@ -84,14 +82,13 @@ final class AppState: ObservableObject {
             vods = resp.list
             page = 1
             totalPages = max(resp.pagecount, 1)
+            // 兜底：部分源 videolist 响应不带 class，用 ac=class 再拉一次
+            if categories.isEmpty {
+                categories = (try? await ApiClient.shared.getClassList(api: site.api)) ?? []
+            }
         } catch {
             listError = error.localizedDescription
         }
-    }
-
-    func selectCategory(_ cat: VodClass?) async {
-        selectedCategory = cat
-        await reloadList()
     }
 
     func reloadList() async {
@@ -100,11 +97,7 @@ final class AppState: ObservableObject {
         listLoading = true
         defer { listLoading = false }
         do {
-            let resp = try await ApiClient.shared.getVodList(
-                api: site.api,
-                categoryId: selectedCategory?.typeId,
-                page: 1
-            )
+            let resp = try await ApiClient.shared.getVodList(api: site.api, page: 1)
             vods = resp.list
             page = 1
             totalPages = max(resp.pagecount, 1)
@@ -119,11 +112,7 @@ final class AppState: ObservableObject {
         defer { listLoading = false }
         do {
             let next = page + 1
-            let resp = try await ApiClient.shared.getVodList(
-                api: site.api,
-                categoryId: selectedCategory?.typeId,
-                page: next
-            )
+            let resp = try await ApiClient.shared.getVodList(api: site.api, page: next)
             let known = Set(vods.map(\.id))
             vods.append(contentsOf: resp.list.filter { !known.contains($0.id) })
             page = next

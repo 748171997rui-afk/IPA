@@ -78,4 +78,23 @@ final class ApiClient {
             throw ApiError.parse("该源不是标准苹果CMS接口")
         }
     }
+
+    /// 轻量分类请求（ac=class）：部分源 videolist 响应不带 class 字段时的兜底
+    func getClassList(api: String) async throws -> [VodClass] {
+        guard var comps = URLComponents(string: api) else { throw ApiError.badURL }
+        var items = comps.queryItems ?? []
+        items.removeAll { $0.name == "ac" }
+        items.append(URLQueryItem(name: "ac", value: "class"))
+        comps.queryItems = items
+        guard let url = comps.url else { throw ApiError.badURL }
+        let (data, resp) = try await session.data(from: url)
+        if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+            throw ApiError.http(http.statusCode)
+        }
+        struct Wrapper: Decodable {
+            let cls: [VodClass]
+            enum CodingKeys: String, CodingKey { case cls = "class" }
+        }
+        return (try? JSONDecoder().decode(Wrapper.self, from: data))?.cls ?? []
+    }
 }

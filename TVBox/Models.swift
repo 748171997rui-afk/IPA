@@ -103,6 +103,24 @@ struct VodItem: Identifiable, Hashable, Decodable {
         vodPlayFrom = str(.vodPlayFrom)
         vodPlayUrl = str(.vodPlayUrl)
     }
+
+    /// memberwise init（自定义 Decodable init 抑制了合成初始化器）；历史模块重建最小 VodItem 用
+    init(vodId: String = "", vodName: String = "", vodPic: String = "",
+         vodRemarks: String = "", vodYear: String = "", vodArea: String = "",
+         vodActor: String = "", vodDirector: String = "", vodContent: String = "",
+         vodPlayFrom: String = "", vodPlayUrl: String = "") {
+        self.vodId = vodId
+        self.vodName = vodName
+        self.vodPic = vodPic
+        self.vodRemarks = vodRemarks
+        self.vodYear = vodYear
+        self.vodArea = vodArea
+        self.vodActor = vodActor
+        self.vodDirector = vodDirector
+        self.vodContent = vodContent
+        self.vodPlayFrom = vodPlayFrom
+        self.vodPlayUrl = vodPlayUrl
+    }
 }
 
 struct VodListResponse: Decodable {

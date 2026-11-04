@@ -27,6 +27,7 @@ struct RootView: View {
     @EnvironmentObject var state: AppState
     @State private var showSettings = false
     @State private var showSearch = false
+    @State private var showHistory = false
     @State private var loadedOnce = false
 
     var body: some View {
@@ -37,7 +38,12 @@ struct RootView: View {
                     ToolbarItem(placement: .principal) {
                         Text("TVBox").font(.headline).foregroundColor(.red)
                     }
-                    ToolbarItem(placement: .navigationBarTrailing) {
+                    ToolbarItemGroup(placement: .navigationBarTrailing) {
+                        Button {
+                            showHistory = true
+                        } label: {
+                            Image(systemName: "clock.arrow.circlepath")
+                        }
                         Button {
                             showSearch = true
                         } label: {
@@ -58,6 +64,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $showSearch) {
             SearchView()
+        }
+        .sheet(isPresented: $showHistory) {
+            HistoryView()
         }
         .task {
             guard !loadedOnce else { return }
@@ -114,16 +123,18 @@ struct HomeView: View {
         }
     }
 
-    // 分类横条
+    // 分类横条：点击进入独立分类页（该分类下的影片）
     private var categoryBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                CategoryChip(text: "全部", selected: state.selectedCategory == nil) {
-                    Task { await state.selectCategory(nil) }
-                }
-                ForEach(state.categories, id: \.typeId) { cat in
-                    CategoryChip(text: cat.typeName, selected: state.selectedCategory?.typeId == cat.typeId) {
-                        Task { await state.selectCategory(cat) }
+                if let site = state.selectedSite {
+                    ForEach(state.categories, id: \.typeId) { cat in
+                        NavigationLink {
+                            CategoryView(site: site, category: cat)
+                        } label: {
+                            CategoryChip(text: cat.typeName, selected: false, action: {})
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }

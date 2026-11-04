@@ -2,14 +2,27 @@ import SwiftUI
 
 struct PlayerItem: Identifiable {
     let url: URL
-    var id: String { url.absoluteString }
+    var siteKey: String = ""
+    var siteName: String = ""
+    var siteApi: String = ""
+    var vodId: String = ""
+    var vodName: String = ""
+    var vodPic: String = ""
+    var sourceIndex: Int = 0
+    var episodeIndex: Int = 0
+    var episodeName: String = ""
+    var resumeAt: Double = 0
+    // 含集索引：避免同影片同集二次弹出时 fullScreenCover identity 冲突不刷新
+    var id: String { url.absoluteString + "#\(sourceIndex)_\(episodeIndex)" }
 }
 
 struct DetailView: View {
     @EnvironmentObject var state: AppState
     let vodItem: VodItem
-    /// 聚合搜索结果的来源站点；nil = 当前选中源
+    /// 聚合搜索/历史记录的来源站点；nil = 当前选中源
     var sourceSite: Site? = nil
+    /// 从播放历史进入时自动续播
+    var autoResume: HistoryEntry? = nil
 
     @State private var detail: VodItem?
     @State private var loading = true
@@ -44,7 +57,7 @@ struct DetailView: View {
         .navigationTitle(detail?.vodName ?? vodItem.vodName)
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(item: $playItem) { item in
-            PlayerView(url: item.url)
+            PlayerView(item: item)
         }
         .task { await load() }
     }
@@ -104,15 +117,12 @@ struct DetailView: View {
                 }
                 let source = sources[min(selectedSourceIndex, sources.count - 1)]
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 8)], spacing: 8) {
-                    ForEach(source.episodes) { ep in
+                    ForEach(Array(source.episodes.enumerated()), id: \.element.id) { idx, ep in
                         Button {
-                            if let u = URL(string: ep.url) {
-                                // 先转横屏，窗口旋转后再弹出全屏播放页
-                                OrientationHelper.setLandscape(true)
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                    playItem = PlayerItem(url: u)
-                                }
-                            }
+                            startPlayback(makeItem(urlString: ep.url, name: ep.name,
+                                                   vod: d, sources: sources,
+                                                   sourceIndex: min(selectedSourceIndex, sources.count - 1),
+                                                   episodeIndex: idx))
                         } label: {
                             Text(ep.name)
                                 .font(.system(size: 13))
@@ -140,10 +150,59 @@ struct DetailView: View {
         errorText = nil
         if let d = await state.getDetail(vodItem, site: sourceSite) {
             detail = d
+            if let entry = autoResume {
+                autoStartResume(d, entry)
+            }
         } else {
             errorText = "加载详情失败"
         }
         loading = false
+    }
+
+    // MARK: - 播放辅助
+
+    private func currentSite() -> Site {
+        sourceSite ?? state.selectedSite
+            ?? Site(key: "", name: "", type: 1, api: "", searchable: nil)
+    }
+
+    private func makeItem(urlString: String, name: String, vod: VodItem,
+                          sources: [PlaySource], sourceIndex: Int, episodeIndex: Int) -> PlayerItem? {
+        guard let u = URL(string: urlString) else { return nil }
+        let site = currentSite()
+        return PlayerItem(url: u, siteKey: site.key, siteName: site.name, siteApi: site.api,
+                          vodId: vod.vodId, vodName: vod.vodName, vodPic: vod.vodPic,
+                          sourceIndex: sourceIndex, episodeIndex: episodeIndex,
+                          episodeName: name)
+    }
+
+    /// 选集与自动续播共用：先转横屏，窗口旋转后再弹出全屏播放页
+    private func startPlayback(_ item: PlayerItem?) {
+        guard let item = item else { return }
+        OrientationHelper.setLandscape(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            playItem = item
+        }
+    }
+
+    /// 历史续播：定位上次的线路/集数，seek 到上次进度
+    private func autoStartResume(_ d: VodItem, _ entry: HistoryEntry) {
+        let sources = PlayUrlParser.parse(from: d.vodPlayFrom, url: d.vodPlayUrl)
+        guard !sources.isEmpty else { return }              // 源已失效：只展示详情页
+        let si = min(max(entry.sourceIndex, 0), sources.count - 1)
+        let eps = sources[si].episodes
+        guard !eps.isEmpty else { return }
+        let ei = min(max(entry.episodeIndex, 0), eps.count - 1)  // 集数越界 → clamp
+        guard let u = URL(string: eps[ei].url) else { return }
+        let site = currentSite()
+        let item = PlayerItem(url: u, siteKey: site.key.isEmpty ? entry.siteKey : site.key,
+                              siteName: site.name.isEmpty ? entry.siteName : site.name,
+                              siteApi: site.api.isEmpty ? entry.siteApi : site.api,
+                              vodId: d.vodId, vodName: d.vodName, vodPic: d.vodPic,
+                              sourceIndex: si, episodeIndex: ei,
+                              episodeName: eps[ei].name,
+                              resumeAt: entry.position)
+        startPlayback(item)
     }
 }
 
