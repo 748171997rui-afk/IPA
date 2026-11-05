@@ -1,0 +1,105 @@
+name: Build DingCheng ERP IPA
+
+# 与仓库原有的 TVBox 工作流完全独立，只在鼎城 ERP 目录变动时触发。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'DingChengERPIOS/**'
+      - '.github/workflows/build-dingcheng-ipa.yml'
+
+concurrency:
+  group: dingcheng-ipa
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi
+          xcodegen --version
+
+      - name: Verify project files
+        working-directory: DingChengERPIOS
+        run: |
+          set -e
+          test -f project.yml
+          test -f DingChengERP/Info.plist
+          test -f DingChengERP/index.html
+          test -f DingChengERP/ErpServer.swift
+          test -f DingChengERP/ViewController.swift
+          test -f DingChengERP/AppDelegate.swift
+          ls -la DingChengERP
+
+      - name: Generate Xcode project
+        working-directory: DingChengERPIOS
+        run: xcodegen generate
+
+      - name: Archive (unsigned, generic iOS device)
+        working-directory: DingChengERPIOS
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project DingChengERP.xcodeproj \
+            -scheme DingChengERP \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/DingChengERP.xcarchive \
+            -derivedDataPath build/DerivedData \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            | tee build.log
+
+      - name: Package IPA
+        working-directory: DingChengERPIOS
+        run: |
+          set -e
+          APP="build/DingChengERP.xcarchive/Products/Applications/DingChengERP.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::未找到 .app 产物"
+            find build -maxdepth 6 -name '*.app' -o -name '*.xcarchive' | head -20
+            exit 1
+          fi
+          # 兜底：若 XcodeGen 没把 index.html 放进 Bundle，手动补入（未签名包可直接改）
+          if [ ! -f "$APP/index.html" ]; then
+            cp DingChengERP/index.html "$APP/index.html"
+            echo "已补入内置网页 index.html"
+          fi
+          echo "--- .app 关键内容 ---"
+          ls -lh "$APP" | head -30
+          mkdir -p build/Payload
+          rm -rf build/Payload/DingChengERP.app
+          cp -R "$APP" build/Payload/
+          cd build
+          rm -f DingChengERP-unsigned.ipa
+          zip -qry DingChengERP-unsigned.ipa Payload
+          ls -lh DingChengERP-unsigned.ipa
+          unzip -l DingChengERP-unsigned.ipa | head -25
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DingChengERP-unsigned-ipa
+          path: DingChengERPIOS/build/DingChengERP-unsigned.ipa
+          retention-days: 30
+          if-no-files-found: error

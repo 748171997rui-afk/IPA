@@ -1,0 +1,31 @@
+name: DingChengERP
+options:
+  bundleIdPrefix: com.dingcheng
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "2.0"
+    CURRENT_PROJECT_VERSION: "2"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    ENABLE_BITCODE: "NO"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    CLANG_ENABLE_MODULES: "YES"
+targets:
+  DingChengERP:
+    type: application
+    platform: iOS
+    sources:
+      - path: DingChengERP
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dingcheng.erp
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: DingChengERP/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
