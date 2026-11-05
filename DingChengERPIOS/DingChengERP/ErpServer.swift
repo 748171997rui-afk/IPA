@@ -69,6 +69,7 @@ final class ErpServer {
         var body = Data()
         var setCookie: String? = nil
         var cacheable = false
+        var extraHeaders = ""
         static func json(_ object: Any, code: Int = 200, setCookie: String? = nil) -> Reply {
             var r = Reply()
             r.code = code
@@ -149,31 +150,35 @@ final class ErpServer {
         var buffer = [UInt8](repeating: 0, count: 8192)
         var headerEnd = -1
         var expected = 0
+        var chunked = false
         for _ in 0..<200 {
             let n = recv(fd, &buffer, buffer.count, 0)
             if n <= 0 { break }
             data.append(contentsOf: buffer[0..<n])
-            if let range = data.range(of: Data([13, 10, 13, 10])) {
-                headerEnd = range.upperBound
-                let head = String(data: data.subdata(in: 0..<range.lowerBound), encoding: .utf8) ?? ""
-                for line in head.split(separator: "\n") {
-                    let l = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    if l.hasPrefix("content-length:") {
-                        expected = Int(l.dropFirst(15).trimmingCharacters(in: .whitespaces)) ?? 0
-                    }
+            if let end = ErpServer.headerBoundary(in: data) {
+                headerEnd = end
+                let head = String(data: data.subdata(in: 0..<end), encoding: .utf8) ?? ""
+                for (k, v) in ErpServer.headerFields(head) {
+                    if k == "content-length" { expected = Int(v) ?? 0 }
+                    else if k == "transfer-encoding" && v.lowercased().contains("chunked") { chunked = true }
                 }
                 break
             }
         }
         guard headerEnd >= 0 else { return }
+        // WKWebView 有时会把 header 与 body 分两次送达，甚至不带 Content-Length。
+        // 统一把 header 之后的全部字节都当作请求体，避免 POST body 被截成空串。
         while data.count - headerEnd < expected && expected < 65536 {
             let n = recv(fd, &buffer, buffer.count, 0)
             if n <= 0 { break }
             data.append(contentsOf: buffer[0..<n])
         }
         let headText = String(data: data.subdata(in: 0..<headerEnd), encoding: .utf8) ?? ""
-        let bodyData = data.subdata(in: headerEnd..<min(data.count, headerEnd + expected))
-        let reply = route(parse(headText, body: String(data: bodyData, encoding: .utf8) ?? ""))
+        var bodyData = data.subdata(in: headerEnd..<data.count)
+        if expected > 0 && bodyData.count > expected { bodyData = bodyData.subdata(in: 0..<expected) }
+        let bodyText = chunked ? ErpServer.dechunk(bodyData)
+                               : (String(data: bodyData, encoding: .utf8) ?? "")
+        let reply = route(parse(headText, body: bodyText))
         let reason = reply.code == 200 ? "OK" : reply.code == 401 ? "Unauthorized"
             : reply.code == 400 ? "Bad Request" : reply.code == 404 ? "Not Found"
             : reply.code == 405 ? "Method Not Allowed" : reply.code == 415 ? "Unsupported Media Type" : "Error"
@@ -182,6 +187,7 @@ final class ErpServer {
         header += "Content-Length: \(reply.body.count)\r\n"
         header += "Cache-Control: \(reply.cacheable ? "public, max-age=86400" : "no-store")\r\n"
         if let c = reply.setCookie { header += "Set-Cookie: \(c)\r\n" }
+        header += reply.extraHeaders
         header += "Connection: close\r\n\r\n"
         var out = Data(header.utf8)
         out.append(reply.body)
@@ -196,10 +202,62 @@ final class ErpServer {
         }
     }
 
+    /// 定位请求头结束位置，兼容 CRLFCRLF 与 LFLF 两种分隔。
+    private static func headerBoundary(in data: Data) -> Int? {
+        let bytes = [UInt8](data)
+        if bytes.count < 2 { return nil }
+        var i = 0
+        while i + 1 < bytes.count {
+            if bytes[i] == 10 && bytes[i + 1] == 10 { return i + 2 }
+            if i + 3 < bytes.count && bytes[i] == 13 && bytes[i + 1] == 10
+                && bytes[i + 2] == 13 && bytes[i + 3] == 10 { return i + 4 }
+            i += 1
+        }
+        return nil
+    }
+
+    /// 逐行解析请求头，字段名统一小写；兼容 CRLF、LF 与冒号后多余空格。
+    private static func headerFields(_ head: String) -> [(String, String)] {
+        let normalized = head.replacingOccurrences(of: "\r\n", with: "\n")
+                             .replacingOccurrences(of: "\r", with: "\n")
+        var out: [(String, String)] = []
+        for line in normalized.split(separator: "\n", omittingEmptySubsequences: false).dropFirst() {
+            let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count < 2 { continue }
+            let k = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let v = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !k.isEmpty { out.append((k, v)) }
+        }
+        return out
+    }
+
+    /// 极简 chunked 解码，只用于本机 WKWebView 上传的小请求体。
+    private static func dechunk(_ data: Data) -> String {
+        let bytes = [UInt8](data)
+        var result: [UInt8] = []
+        var i = 0
+        while i < bytes.count {
+            var j = i
+            while j < bytes.count && bytes[j] != 10 && bytes[j] != 13 { j += 1 }
+            let sizeLine = String(bytes: bytes[i..<j], encoding: .utf8) ?? ""
+            guard let first = sizeLine.split(separator: ";").first,
+                  let n = Int(first.trimmingCharacters(in: .whitespaces), radix: 16), n > 0 else { break }
+            while j < bytes.count && (bytes[j] == 10 || bytes[j] == 13) { j += 1 }
+            let end = min(bytes.count, j + n)
+            if end <= j { break }
+            result.append(contentsOf: bytes[j..<end])
+            i = end
+            while i < bytes.count && (bytes[i] == 10 || bytes[i] == 13) { i += 1 }
+        }
+        return String(bytes: result, encoding: .utf8) ?? ""
+    }
+
     private func parse(_ head: String, body: String) -> Request {
         var req = Request()
         req.body = body
-        let lines = head.split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = head.replacingOccurrences(of: "\r\n", with: "\n")
+                        .replacingOccurrences(of: "\r", with: "\n")
+                        .split(separator: "\n", omittingEmptySubsequences: false)
         if let first = lines.first {
             let parts = first.split(separator: " ")
             if parts.count >= 2 {
@@ -211,12 +269,9 @@ final class ErpServer {
                 } else { req.path = full }
             }
         }
-        for line in lines.dropFirst() {
-            guard let c = line.firstIndex(of: ":") else { continue }
-            let key = String(line[line.startIndex..<c]).trimmingCharacters(in: .whitespaces).lowercased()
-            let val = String(line[line.index(after: c)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if key == "cookie" { req.cookie = String(val) }
-            else if key == "content-type" { req.contentType = String(val) }
+        for (k, v) in ErpServer.headerFields(head) {
+            if k == "cookie" { req.cookie = v }
+            else if k == "content-type" { req.contentType = v }
         }
         for pair in req.query.split(separator: "&") {
             guard let i = pair.firstIndex(of: "=") else { continue }
@@ -230,6 +285,16 @@ final class ErpServer {
     // MARK: - 路由
 
     private func route(_ req: Request) -> Reply {
+        // 万一 WKWebView 把带 application/json 的 POST 当成非简单请求发了预检，
+        // 直接放行，避免登录请求根本到不了服务端。
+        if req.method == "OPTIONS" {
+            var r = Reply()
+            r.extraHeaders = "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Headers: *\r\n"
+                + "Access-Control-Allow-Methods: GET,POST,OPTIONS\r\n"
+                + "Access-Control-Max-Age: 86400\r\n"
+            return r
+        }
         let p = req.path
         if p == "/" || p == "/index.html" || p == "/m.html" || p == "/m" { return htmlPage() }
         if p == "/manifest.webmanifest" {
@@ -294,12 +359,28 @@ final class ErpServer {
 
     private func login(_ req: Request) -> Reply {
         if req.method != "POST" { return fail(405, "请用 POST", "BAD_METHOD") }
-        if !req.contentType.lowercased().contains("application/json") {
-            return fail(415, "需要 application/json", "BAD_CONTENT_TYPE")
+        // WKWebView 在部分 iOS 版本会改写或丢弃自定义 Content-Type 请求头，
+        // 这里不再强制校验请求头：只要请求体能解析出账号密码就放行。
+        // 同时兼容 JSON 与 x-www-form-urlencoded 两种请求体。
+        var dict: [String: Any]? = nil
+        if let d = req.body.data(using: .utf8),
+           let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
+            dict = j
+        } else if req.body.contains("=") {
+            var tmp: [String: Any] = [:]
+            for pair in req.body.split(separator: "&") {
+                let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                if kv.count == 2 {
+                    let k = String(kv[0]).removingPercentEncoding ?? String(kv[0])
+                    let v = String(kv[1]).removingPercentEncoding ?? String(kv[1])
+                    tmp[k] = v.replacingOccurrences(of: "+", with: " ")
+                }
+            }
+            dict = tmp
         }
-        guard let d = req.body.data(using: .utf8),
-              let b = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
-            return fail(400, "请求体不是合法 JSON", "BAD_BODY")
+        guard let b = dict else {
+            let hint = req.contentType.isEmpty ? "无" : req.contentType
+            return fail(400, "请求体不是合法 JSON（Content-Type=\(hint)，长度=\(req.body.utf8.count)）", "BAD_BODY")
         }
         let user = (b["user"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let pass = b["password"] as? String ?? ""
