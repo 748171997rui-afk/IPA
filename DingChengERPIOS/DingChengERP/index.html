@@ -373,6 +373,11 @@ function jxDateCN(s){
   const m = String(s || '').match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   return m ? `${m[1]}年${+m[2]}月${+m[3]}日` : String(s || '');
 }
+// shijian 是「2026/11/6」这类不补零格式，字符串排序会错（9月排在11月后），必须按日期数值比
+function jxTime(s){
+  const m = String(s || '').match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  return m ? (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]) : 0;
+}
 // 库存性质列取期末值；发生额列（入库/出库/销售/抵进抵出/损耗）取范围合计
 function jxIsStockCol(name){ return name.indexOf('库存') >= 0 || name === '存'; }
 function renderJinxiao(rows){
@@ -381,7 +386,7 @@ function renderJinxiao(rows){
   if(!rows.length){ $('#jxWrap').innerHTML = ''; $('#empty').style.display = 'block'; return; }
   $('#empty').style.display = 'none';
   // 升序排列，期末值 = 范围内最后一天
-  const rs = rows.slice().sort((a, b) => String(a.shijian).localeCompare(String(b.shijian)));
+  const rs = rows.slice().sort((a, b) => jxTime(a.shijian) - jxTime(b.shijian));
   const last = rs[rs.length - 1];
   const sumCol = (r, c) => rs.reduce((s, x) => s + jxNum(jxVal(x, c[0])), 0);
   const stats = JX_GROUPS.map(g => {
