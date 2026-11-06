@@ -731,7 +731,7 @@ final class ErpServer {
         }
         var merged: [[String: Any]]
         if merge {
-            let fetchedOk = ordered.count >= Double(total > 0 ? total : ordered.count) * 0.98
+            let fetchedOk = Double(ordered.count) >= Double(total > 0 ? total : ordered.count) * 0.98
             if fetchedOk {
                 merged = ordered.compactMap { outMap[$0] }   // 以云端为准：新增+修改覆盖+本地多余删除
             } else {
