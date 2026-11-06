@@ -348,7 +348,7 @@ const JX_GROUPS = [
   { name:'置换地库存',    cols:[['zh_ruku','入库'],['zh_chuku','出库'],['zh_kucun','库存']], wh:1 },
   { name:'原材料进',      cols:[['yc_ruku','入库'],['yc_chuku','出库'],['yc_kucun','库存']], wh:1 },
   { name:'销售及其他',    cols:[['xs_kucun','销售'],['ybf_kucun','样板房库存'],['dijin_kucun','抵进材料'],['dichu_kucun','抵出材料']] },
-  { name:'进销存核对',    cols:[['temp','进'],['temp','销'],['sum_kucun','存'],['sunHao','损耗'],['temp','平衡检测'],['temp','备注']] }
+  { name:'进销存核对',    cols:[['temp','进'],['temp','销'],['sum_kucun','总库存'],['sunHao','单重量引起的累积偏差'],['temp','平衡检测'],['temp','备注']] }
 ];
 // 占位/候选字段：厂商后端当前不返回原材料进字段，先做候选兜底，将来加了自动带出
 function jxVal(r, f){
@@ -378,8 +378,9 @@ function jxTime(s){
   const m = String(s || '').match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   return m ? (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]) : 0;
 }
-// 库存性质列取期末值；发生额列（入库/出库/销售/抵进抵出/损耗）取范围合计
-function jxIsStockCol(name){ return name.indexOf('库存') >= 0 || name === '存'; }
+// 库存性质列取期末值（含「单重量引起的累积偏差」——它是每天的快照，跨天不能累加）；
+// 发生额列（入库/出库/销售/抵进抵出）取范围合计
+function jxIsStockCol(name){ return name.indexOf('库存') >= 0 || name === '单重量引起的累积偏差'; }
 function renderJinxiao(rows){
   $('#tableWrap').style.display = 'none'; $('#cardWrap').style.display = 'none';
   $('#jxWrap').classList.add('show');
@@ -390,18 +391,17 @@ function renderJinxiao(rows){
   const last = rs[rs.length - 1];
   const sumCol = (r, c) => rs.reduce((s, x) => s + jxNum(jxVal(x, c[0])), 0);
   const stats = JX_GROUPS.map(g => {
-    const items = []; let active = false;
+    const items = [], stockTail = []; let active = false;
     g.cols.forEach(c => {
       if(jxIsStockCol(c[1])){
         const n = jxNum(jxVal(last, c[0]));
-        if(n) items.push(`期末${c[1]} ${jxFmt(n)}`);
+        if(n) stockTail.push(`${c[1]} ${jxFmt(n)}`);
       } else {
         const s = sumCol(last, c);
         if(s){ items.push(`${c[1]} ${jxFmt(s)}`); active = true; }
       }
     });
-    const stockTail = items.filter(t => t.indexOf('期末') === 0);
-    return { name: g.name, items: items.filter(t => t.indexOf('期末') !== 0), stockTail, active, wh: !!g.wh };
+    return { name: g.name, items, stockTail, active, wh: !!g.wh };
   });
   // 统计范围描述（跟筛选框一致；单天只写一天）
   const s = $('#start').value, e = $('#end').value;
@@ -458,7 +458,10 @@ function renderBody(rows, cols){
       // 出入库卡片：实际重量与数量并列高亮显示（此前排在第 8 列被截掉）
       const w = S.tab!=='stock' && r.shiji_zhongliang!==undefined && r.shiji_zhongliang!=='' && r.shiji_zhongliang!=null
         ? `<span class="mq"><b>实际重量：</b>${esc(fmt(r.shiji_zhongliang))}</span>` : '';
-      const meta = qty + w + cols.filter(c=>!skip.has(c[0]) && r[c[0]]!=='' && r[c[0]]!=null)
+      // 来源强制显示（用户要求各端可见，不参与前 5 名额竞争）
+      const src = S.tab!=='stock' && r.laiyuan_telephone!==undefined && r.laiyuan_telephone!=='' && r.laiyuan_telephone!=null
+        ? `<span class="mq"><b>来源：</b>${esc(fmt(r.laiyuan_telephone))}</span>` : '';
+      const meta = qty + w + src + cols.filter(c=>!skip.has(c[0]) && r[c[0]]!=='' && r[c[0]]!=null)
         .slice(0,5)
         .map(c=>`<span><b>${esc(c[1])}：</b>${esc(fmt(r[c[0]]))}</span>`).join('');
       return `<div class="mcard${cls}"><div class="top"><div class="spec">${esc(title)}</div></div><div class="meta">${meta}</div></div>`;
@@ -543,10 +546,10 @@ async function load(){
       S.data = j.rows || []; S.total = j.total || S.data.length; S.view = S.data;
       renderJinxiao(S.data);
       const last = S.data[0] || {};
-      renderStats([['记录(天)',fmt(S.total)],['最新总库存',fmt(jxFmt(last.sum_kucun))],['最新损耗',fmt(jxFmt(last.sunHao))]]);
+      renderStats([['记录(天)',fmt(S.total)],['最新总库存',fmt(jxFmt(last.sum_kucun))],['最新累积偏差',fmt(jxFmt(last.sunHao))]]);
       const range = ($('#start').value || '最早') + ' ~ ' + ($('#end').value || '至今');
       showNote(true);
-      $('#note').textContent = `进销动态 ${range}：文字汇总各仓库入库 / 出库金额与期末库存，实时取自厂商云（60 秒内重复查询走缓存）。入库、出库为范围内合计，库存为期末（最后一天）数值；「无出入库」表示该仓库范围内没有发生额。查全部历史请点【全部时间】。`;
+      $('#note').textContent = `进销动态 ${range}：文字汇总各仓库入库 / 出库金额与库存，实时取自厂商云（60 秒内重复查询走缓存）。入库、出库为范围内合计，库存取最后一天的数值；「无出入库」表示该仓库范围内没有发生额。查全部历史请点【全部时间】。`;
       $('#pageInfo').textContent = `共 ${fmt(S.total)} 天记录`;
       $('#prev').disabled = $('#next').disabled = true;
     } else if(S.tab==='stock'){

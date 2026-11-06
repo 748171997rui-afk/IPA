@@ -23,16 +23,16 @@ final class ErpServer {
 
     private static let rukuColumns: [[Any]] = [
         ["rukushijian", "入库时间", 150], ["leixing", "类型", 140], ["mingcheng", "名称", 130],
-        ["daima", "编码", 130], ["spec", "规格(宽×长)", 110], ["cangku", "仓库", 100],
+        ["daima", "编码", 130], ["spec", "规格", 110], ["cangku", "仓库", 100],
         ["shuliang", "数量", 90], ["shiji_zhongliang", "实际重量", 90],
-        ["erp_pinhao", "ERP品号", 110], ["crkxmmc", "项目", 130], ["yonghu", "操作人", 110],
+        ["crkxmmc", "项目", 130],
         ["laiyuan_telephone", "来源", 140], ["beizhu", "备注", 180]
     ]
     private static let chukuColumns: [[Any]] = [
         ["chukushijian", "出库时间", 150], ["leixing", "类型", 140], ["mingcheng", "名称", 130],
-        ["daima", "编码", 130], ["spec", "规格(宽×长)", 110], ["cangku", "仓库", 100],
+        ["daima", "编码", 130], ["spec", "规格", 110], ["cangku", "仓库", 100],
         ["shuliang", "数量", 90], ["shiji_zhongliang", "实际重量", 90],
-        ["erp_pinhao", "ERP品号", 110], ["crkxmmc", "项目", 130], ["yonghu", "操作人", 110],
+        ["crkxmmc", "项目", 130],
         ["laiyuan_telephone", "来源", 140], ["beizhu", "备注", 180]
     ]
     private static let stockColumns: [[Any]] = [
@@ -627,13 +627,15 @@ final class ErpServer {
     private func addRows(_ map: inout [String: [String: Any]], order: inout [String], rows: [[String: Any]]) {
         for r in rows {
             let kuan = num(r["kuan"]), chang = num(r["chang"])
+            // 与 server.js localStock 同键：changdu1/changdu2 进分组键（C槽同宽长不同长度不能合并）
             let key = [str(r["daima"]), str(r["mingcheng"]), fmt(kuan), fmt(chang),
+                       fmt(num(r["changdu1"])), fmt(num(r["changdu2"])),
                        str(r["leixing"]), str(r["cangku"])].joined(separator: "|")
             if map[key] == nil {
                 let item: [String: Any] = [
                     "daima": str(r["daima"]), "mingcheng": str(r["mingcheng"]),
                     "leixing": str(r["leixing"]), "cangku": str(r["cangku"]),
-                    "spec": (kuan != 0 || chang != 0) ? fmt(kuan) + "×" + fmt(chang) : "",
+                    "spec": rowSpec(r),
                     "stockQty": 0
                 ]
                 map[key] = item
@@ -646,8 +648,45 @@ final class ErpServer {
     }
 
     private func decorate(_ row: inout [String: Any]) {
-        let kuan = num(row["kuan"]), chang = num(row["chang"])
-        row["spec"] = (kuan != 0 || chang != 0) ? fmt(kuan) + "×" + fmt(chang) : ""
+        row["spec"] = rowSpec(row)
+    }
+
+    // C槽类型规格（与 server.js 同语义）：IC→IC长1；ICA/SNTL→ICA长1；SNTR→IC长1A；SNTT→ICA长1A；SCU→SCU长1(+长2)
+    private func cslotSpec(_ r: [String: Any]) -> String {
+        guard str(r["leixing"]).contains("C槽") else { return "" }
+        let daima = str(r["daima"]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let c1 = num(r["changdu1"]), c2 = num(r["changdu2"])
+        guard c1 != 0 else { return "" }
+        let w = fmt(num(r["kuan"])) + "×" + fmt(num(r["chang"]))
+        switch daima {
+        case "IC": return w + "IC" + fmt(c1)
+        case "ICA", "SNTL": return w + "ICA" + fmt(c1)
+        case "SNTR": return w + "IC" + fmt(c1) + "A"
+        case "SNTT": return w + "ICA" + fmt(c1) + "A"
+        case "SCU": return c2 != 0 ? w + "SCU" + fmt(c1) + "+" + fmt(c2) : w + "SCU" + fmt(c1)
+        default: return ""
+        }
+    }
+
+    // 字母连接类（与 server.js 同语义）：只看编码，规格=宽度左+编码+宽度右，无长度段
+    private static let letterCodes: Set<String> = ["P", "FP", "K", "EB", "BP", "BPP", "CPPP", "CPP", "PT", "MB", "PS"]
+
+    private func letterSpec(_ r: [String: Any]) -> String {
+        let daima = str(r["daima"]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard Self.letterCodes.contains(daima) else { return "" }
+        let w1 = num(r["kuan"]), w2 = num(r["chang"])
+        guard w1 != 0, w2 != 0 else { return "" }
+        return fmt(w1) + daima + fmt(w2)
+    }
+
+    // 统一规格出口：C槽规则 → 字母连接类 → 兜底宽×长。出入库与库存汇总共用。
+    private func rowSpec(_ r: [String: Any]) -> String {
+        let cs = cslotSpec(r)
+        if !cs.isEmpty { return cs }
+        let ls = letterSpec(r)
+        if !ls.isEmpty { return ls }
+        let kuan = num(r["kuan"]), chang = num(r["chang"])
+        return (kuan != 0 || chang != 0) ? fmt(kuan) + "×" + fmt(chang) : ""
     }
 
     private func buildCon(isOut: Bool, f: [String: String]) -> String {
