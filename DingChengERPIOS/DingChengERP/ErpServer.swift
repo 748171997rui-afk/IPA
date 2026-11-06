@@ -88,6 +88,38 @@ final class ErpServer {
     private var running = false
     private(set) var port: Int = 0
 
+    // ---------------- 本地数据仓库（与 Windows EXE / 安卓 同一套规则） ----------------
+    // 全量同步入库/出库历史到本机，查询/搜索/翻页/库存全部本地毫秒级计算。
+    // 登录后后台对比厂商云：每表 1 次请求对总数+首页指纹 → 无差异秒结束；有差异增量拉取；异常全量兜底。
+    // 每 1 分钟静默复查、每 6 小时自动升级为全量校验。数据是用户自有业务数据；删除数据文件即回到纯云端模式。
+    private static let syncSeconds: TimeInterval = 60
+    private static let fullCheckSeconds: TimeInterval = 6 * 60 * 60
+    private static let syncPageLimit = 600
+    private enum SyncError: Error { case upstream }
+
+    private let storeLock = NSLock()
+    private var storeRuku: [[String: Any]] = []
+    private var storeChuku: [[String: Any]] = []
+    private var dataReadyFlag = false
+    private var storeSyncingFlag = false
+    private var syncedAt: TimeInterval = 0
+    private var lastNew = 0
+    private var lastFullCheck: TimeInterval = 0
+    private let syncQueue = DispatchQueue(label: "erp.sync")
+    private var syncTimer: DispatchSourceTimer?
+    private let dataFile: URL?
+
+    private var storeReady: Bool { storeLock.lock(); defer { storeLock.unlock() }; return dataReadyFlag }
+    private var isStoreSyncing: Bool { storeLock.lock(); defer { storeLock.unlock() }; return storeSyncingFlag }
+    private var currentSyncedAt: TimeInterval { storeLock.lock(); defer { storeLock.unlock() }; return syncedAt }
+    private var currentLastNew: Int { storeLock.lock(); defer { storeLock.unlock() }; return lastNew }
+
+    /// dataDir 缺省用 App Documents；传 nil 则纯内存（不持久化）
+    init(dataDir: URL? = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first) {
+        self.dataFile = dataDir?.appendingPathComponent("erp-data.json.gz")
+        loadStore()
+    }
+
     // MARK: - 启动 / 停止
 
     func start(completion: @escaping (Int) -> Void, failure: @escaping (String) -> Void) {
@@ -124,6 +156,7 @@ final class ErpServer {
             self.listenFD = fd
             self.port = chosen
             self.running = true
+            self.startSyncTimer()
             DispatchQueue.main.async { completion(chosen) }
             while self.running {
                 let client = accept(fd, nil, nil)
@@ -136,6 +169,8 @@ final class ErpServer {
 
     func stop() {
         running = false
+        syncTimer?.cancel()
+        syncTimer = nil
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         lock.lock()
         sessions.removeAll()
@@ -354,7 +389,11 @@ final class ErpServer {
             "tables": tables,
             "typeOptions": ErpServer.typeOptions,
             "typeOptionsWithData": ErpServer.typeOptionsWithData,
-            "exportMaxRows": 5000
+            "exportMaxRows": 5000,
+            "dataReady": storeReady,
+            "syncing": isStoreSyncing,
+            "syncedAt": currentSyncedAt,
+            "lastNew": currentLastNew
         ]
         return Reply.json(object)
     }
@@ -399,6 +438,8 @@ final class ErpServer {
                                    message: result.message, permissions: result.permissions)
         lock.unlock()
         let object: [String: Any] = ["ok": true, "user": user, "message": result.message]
+        // 登录成功后后台无感同步（首次全量下载或快速对比），不阻塞登录响应
+        syncQueue.async { [weak self] in self?.syncAll("login") }
         return Reply.json(object,
                           setCookie: "erp_sid=\(newSid); Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
     }
@@ -431,6 +472,8 @@ final class ErpServer {
         let page = max(1, Int(req.params["page"] ?? "") ?? 1)
         let rows = min(5000, max(1, Int(req.params["rows"] ?? "") ?? 20))
         let con = buildCon(isOut: isOut, f: req.params)
+        // 本地仓库就绪 → 毫秒级本地查询（数据同步即时反映，不走缓存）；未就绪 → 回退远程实时查询
+        if storeReady { return localQuery(isOut: isOut, page: page, rows: rows, f: req.params, con: con) }
         // 60 秒会话隔离查询缓存：重复点击/翻页回看秒出（dropSession 时自动清理）
         let qkey = "q|\(sid)|\(isOut ? "chuku" : "ruku")|\(page)|\(rows)|\(con)"
         lock.lock()
@@ -465,6 +508,8 @@ final class ErpServer {
         let s = sid.isEmpty ? nil : sessions[sid]
         lock.unlock()
         guard let session = s else { return needLogin() }
+        // 本地仓库就绪 → 毫秒级本地汇总；未就绪 → 回退远程实时拉取
+        if storeReady { return localStock(req.params) }
         let keys = req.params.keys.sorted()
         let key = sid + "|" + keys.map { "\($0)=\(req.params[$0] ?? "")" }.joined(separator: "&")
         lock.lock()
@@ -510,6 +555,348 @@ final class ErpServer {
         lock.lock()
         cache[key] = CacheItem(time: Date().timeIntervalSince1970, sid: sid, json: json)
         lock.unlock()
+        var r = Reply(); r.body = d; return r
+    }
+
+    // MARK: - 本地数据仓库
+
+    /// 启动即加载本地数据（不依赖登录）。文件为本 App 自产 zlib(deflate) 压缩 JSON。
+    private func loadStore() {
+        guard let f = dataFile, FileManager.default.fileExists(atPath: f.path),
+              let raw = try? Data(contentsOf: f),
+              let plain = try? (raw as NSData).decompressed(using: .zlib) as Data,
+              let j = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any],
+              let a = j["ruku"] as? [[String: Any]],
+              let b = j["chuku"] as? [[String: Any]] else { return }
+        storeLock.lock()
+        storeRuku = a; storeChuku = b
+        syncedAt = (j["syncedAt"] as? NSNumber)?.doubleValue ?? 0
+        dataReadyFlag = a.count + b.count > 0
+        storeLock.unlock()
+    }
+
+    /// 序列化整仓为 zlib 压缩 JSON（临时文件 + 原子替换），只在后台同步队列调用
+    private func saveStore() {
+        guard let f = dataFile else { return }
+        storeLock.lock()
+        let dict: [String: Any] = ["ruku": storeRuku, "chuku": storeChuku, "syncedAt": syncedAt]
+        storeLock.unlock()
+        guard let plain = try? JSONSerialization.data(withJSONObject: dict, options: []),
+              let gz = try? (plain as NSData).compressed(using: .zlib) as Data else { return }
+        let tmp = f.appendingPathExtension("tmp")
+        do {
+            try gz.write(to: tmp)
+            if FileManager.default.fileExists(atPath: f.path) {
+                _ = try FileManager.default.replaceItemAt(f, withItemAt: tmp)
+            } else {
+                try FileManager.default.moveItem(at: tmp, to: f)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+        }
+    }
+
+    /// 记录唯一键：优先厂商 ID 号，退化到 时间+编码+宽+长+数量 组合（与 server.js rowKey 同语义）
+    private func rowKey(_ r: [String: Any]) -> String {
+        var id = str(r["ID"])
+        if id.isEmpty { id = str(r["id"]) }
+        if !id.isEmpty { return id }
+        var t = str(r["rukushijian"])
+        if t.isEmpty { t = str(r["chukushijian"]) }
+        return [t, str(r["daima"]), str(r["kuan"]), str(r["chang"]), str(r["shuliang"])].joined(separator: "|")
+    }
+
+    /// 行内容指纹：所有字段值参与对比，total 不变但记录被修改也能发现
+    private func fingerprint(_ r: [String: Any]) -> String {
+        var out = ""
+        for k in r.keys.sorted() { out += k + "\u{01}" + str(r[k]) + "\u{02}" }
+        return out
+    }
+
+    private func commitStore(isOut: Bool, rows: [[String: Any]]) {
+        storeLock.lock()
+        if isOut { storeChuku = rows } else { storeRuku = rows }
+        dataReadyFlag = storeRuku.count + storeChuku.count > 0
+        storeLock.unlock()
+    }
+
+    private func snapshot(isOut: Bool) -> [[String: Any]] {
+        storeLock.lock(); defer { storeLock.unlock() }
+        return isOut ? storeChuku : storeRuku
+    }
+
+    private func countOf(isOut: Bool) -> Int {
+        storeLock.lock(); defer { storeLock.unlock() }
+        return (isOut ? storeChuku : storeRuku).count
+    }
+
+    /// 单表同步：首页整行指纹快速对比 → 无差异 1 请求/表秒结束；
+    /// 有差异按时间倒序增量翻页（连续 2 页全已知才停，上限 40 页）；数量对不齐则全量兜底。
+    /// 返回本次是否产生了数据变更（决定是否落盘，避免无谓的整仓序列化）。
+    private func syncTable(isOut: Bool, cookie: String, full: Bool) throws -> Bool {
+        let con = "danwei = '" + esc(ErpServer.company) + "'"
+        guard let first = grid(isOut: isOut, page: 1, rows: ErpServer.pageSize, con: con, cookie: cookie) else {
+            throw SyncError.upstream
+        }
+        let total = Int(num(first["total"]))
+        let firstRows = (first["rows"] as? [[String: Any]]) ?? []
+        let local = snapshot(isOut: isOut)
+        var byKey: [String: [String: Any]] = [:]
+        for r in local { byKey[rowKey(r)] = r }
+
+        var firstNew = false, firstChanged = false
+        loop: for r in firstRows {
+            guard let l = byKey[rowKey(r)] else { firstNew = true; break }
+            if fingerprint(l) != fingerprint(r) { firstChanged = true; break loop }
+        }
+        if local.count == total && !firstNew && !firstChanged { return false }
+        if full { try fullSyncTable(isOut: isOut, cookie: cookie, total: total, merge: true); return true }
+
+        var working = local
+        var changed = false
+        if firstNew || firstChanged {
+            var idxByKey: [String: Int] = [:]
+            for (i, r) in working.enumerated() { idxByKey[rowKey(r)] = i }
+            var seen = Set(byKey.keys)
+            let totalPages = Int(ceil(Double(total) / Double(ErpServer.pageSize)))
+            let maxPages = max(1, min(40, totalPages))
+            var streak = 0
+            pageLoop: for p in 1...maxPages {
+                let rows: [[String: Any]]
+                if p == 1 {
+                    rows = firstRows
+                } else {
+                    guard let g = grid(isOut: isOut, page: p, rows: ErpServer.pageSize, con: con, cookie: cookie) else { break }
+                    rows = (g["rows"] as? [[String: Any]]) ?? []
+                }
+                for r in rows {
+                    let k = rowKey(r)
+                    if let idx = idxByKey[k] {
+                        if fingerprint(working[idx]) != fingerprint(r) {
+                            working[idx] = r; byKey[k] = r; changed = true
+                        }
+                    } else {
+                        seen.insert(k)
+                        idxByKey[k] = working.count
+                        working.append(r)
+                        byKey[k] = r
+                        changed = true
+                    }
+                }
+                let allKnown = !rows.isEmpty && rows.allSatisfy { seen.contains(rowKey($0)) }
+                streak = allKnown ? streak + 1 : 0
+                if streak >= 2 { break pageLoop }
+            }
+        }
+        if working.count != total {
+            try fullSyncTable(isOut: isOut, cookie: cookie, total: total, merge: true)
+            return true
+        }
+        if changed { commitStore(isOut: isOut, rows: working) }
+        return changed
+    }
+
+    /// 全量拉取单表。merge=true 时与本地逐条 diff 合并；分页拉取不完整时只补/覆盖、不删（防误删）。
+    private func fullSyncTable(isOut: Bool, cookie: String, total: Int, merge: Bool) throws {
+        let con = "danwei = '" + esc(ErpServer.company) + "'"
+        guard let g1 = grid(isOut: isOut, page: 1, rows: ErpServer.pageSize, con: con, cookie: cookie) else {
+            throw SyncError.upstream
+        }
+        let pages = min(Int(ceil(Double(max(total, 0)) / Double(ErpServer.pageSize))) + 2, ErpServer.syncPageLimit)
+        var all: [[String: Any]] = (g1["rows"] as? [[String: Any]]) ?? []
+        if pages > 1 {
+            let box = ErpServer.Box()
+            var from = 2
+            while from <= pages {
+                let batch = min(4, pages - from + 1)
+                let start = from
+                DispatchQueue.concurrentPerform(iterations: batch) { i in
+                    let page = start + i
+                    if let g = self.grid(isOut: isOut, page: page, rows: ErpServer.pageSize, con: con, cookie: cookie),
+                       let list = g["rows"] as? [[String: Any]] {
+                        box.set(page, list)
+                    }
+                }
+                for p in start..<(start + batch) { all.append(contentsOf: box.get(p)) }
+                from += batch
+            }
+        }
+        // 去重：保持首次出现顺序，后值覆盖前值（与 server.js 同语义）
+        var outMap: [String: [String: Any]] = [:]
+        var ordered: [String] = []
+        for r in all {
+            let k = rowKey(r)
+            if outMap[k] == nil { ordered.append(k) }
+            outMap[k] = r
+        }
+        var merged: [[String: Any]]
+        if merge {
+            let fetchedOk = ordered.count >= Double(total > 0 ? total : ordered.count) * 0.98
+            if fetchedOk {
+                merged = ordered.compactMap { outMap[$0] }   // 以云端为准：新增+修改覆盖+本地多余删除
+            } else {
+                var cur: [String: [String: Any]] = [:]
+                var curOrder: [String] = []
+                for r in snapshot(isOut: isOut) {
+                    let k = rowKey(r)
+                    if cur[k] == nil { curOrder.append(k) }
+                    cur[k] = r
+                }
+                for k in ordered {                            // 不完整：只 upsert，不删
+                    if cur[k] == nil { curOrder.append(k) }
+                    cur[k] = outMap[k] ?? cur[k]
+                }
+                merged = curOrder.compactMap { cur[$0] }
+            }
+        } else {
+            merged = ordered.compactMap { outMap[$0] }
+        }
+        commitStore(isOut: isOut, rows: merged)
+    }
+
+    private func startSyncTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: syncQueue)
+        timer.schedule(deadline: .now() + ErpServer.syncSeconds, repeating: ErpServer.syncSeconds)
+        timer.setEventHandler { [weak self] in self?.syncAll("定时") }
+        timer.resume()
+        syncTimer = timer
+    }
+
+    /// 后台同步：需要一个已登录会话的 cookie（有会话才查）。每 1 分钟增量复查；超 6 小时自动升级全量。
+    private func syncAll(_ reason: String) {
+        storeLock.lock()
+        if storeSyncingFlag { storeLock.unlock(); return }
+        var found: Session? = nil
+        for s in sessions.values where !s.cookie.isEmpty { found = s; break }
+        guard let session = found else { storeLock.unlock(); return }
+        storeSyncingFlag = true
+        storeLock.unlock()
+        defer {
+            storeLock.lock(); storeSyncingFlag = false; storeLock.unlock()
+        }
+        let full = Date().timeIntervalSince1970 - lastFullCheck > ErpServer.fullCheckSeconds
+        storeLock.lock()
+        let before = storeRuku.count + storeChuku.count
+        lastNew = 0
+        storeLock.unlock()
+        do {
+            var changed = try syncTable(isOut: false, cookie: session.cookie, full: full)
+            changed = try syncTable(isOut: true, cookie: session.cookie, full: full) || changed
+            if full { lastFullCheck = Date().timeIntervalSince1970 }
+            storeLock.lock()
+            syncedAt = Date().timeIntervalSince1970
+            dataReadyFlag = storeRuku.count + storeChuku.count > 0
+            lastNew = max(0, storeRuku.count + storeChuku.count - before)
+            storeLock.unlock()
+            if changed || before == 0 { saveStore() }
+        } catch {
+            // 同步失败不影响查询（本地旧数据或远程实时路径兜底）
+        }
+    }
+
+    /// 本地筛选：复刻远程 con 的语义（日期范围 / 关键字含来源项目 / 宽×长与纯数字规格 / 仓库类型项目 like）
+    private func localRowsFiltered(isOut: Bool, f: [String: String]) -> [[String: Any]] {
+        let dateField = isOut ? "chukushijian" : "rukushijian"
+        let s = (f["start"] ?? "").trimmingCharacters(in: .whitespaces)
+        let e = (f["end"] ?? "").trimmingCharacters(in: .whitespaces)
+        let startC = s.isEmpty ? nil : s + " 00:00:00"
+        let endC = e.isEmpty ? nil : e + " 23:59:59"
+        let qRaw = (f["q"] ?? "").trimmingCharacters(in: .whitespaces)
+        let q = qRaw.lowercased()
+        let ck = (f["cangku"] ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        let lx = (f["leixing"] ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        let xm = (f["xmmc"] ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+
+        var pa = Double.nan, pb = 0.0, pn = 0.0, isNum = false
+        if let re = try? NSRegularExpression(pattern: "^(\\d+(?:\\.\\d+)?)\\s*[xX*×＊/\\-\\s]\\s*(\\d+(?:\\.\\d+)?)$"),
+           let m = re.firstMatch(in: qRaw, range: NSRange(qRaw.startIndex..., in: qRaw)), m.numberOfRanges == 3,
+           let r1 = Range(m.range(at: 1), in: qRaw), let r2 = Range(m.range(at: 2), in: qRaw) {
+            pa = Double(qRaw[r1]) ?? 0
+            pb = Double(qRaw[r2]) ?? 0
+        } else if !qRaw.isEmpty,
+                  let re = try? NSRegularExpression(pattern: "^\\d+(?:\\.\\d+)?$"),
+                  re.firstMatch(in: qRaw, range: NSRange(qRaw.startIndex..., in: qRaw)) != nil {
+            isNum = true
+            pn = Double(qRaw) ?? 0
+        }
+
+        var rows: [[String: Any]] = []
+        for r in snapshot(isOut: isOut) {
+            let d = str(r[dateField])
+            if let sc = startC, d < sc { continue }
+            if let ec = endC, d > ec { continue }
+            if !ck.isEmpty && !str(r["cangku"]).lowercased().contains(ck) { continue }
+            if !lx.isEmpty && !str(r["leixing"]).lowercased().contains(lx) { continue }
+            if !xm.isEmpty && !str(r["crkxmmc"]).lowercased().contains(xm) { continue }
+            if !q.isEmpty {
+                var hit = false
+                for k in ErpServer.keywordFields where str(r[k]).lowercased().contains(q) { hit = true; break }
+                if !hit && !pa.isNaN {
+                    let k = num(r["kuan"]), c = num(r["chang"])
+                    hit = (k == pa && c == pb) || (k == pb && c == pa)
+                } else if !hit && isNum {
+                    hit = num(r["kuan"]) == pn || num(r["chang"]) == pn
+                }
+                if !hit { continue }
+            }
+            rows.append(r)
+        }
+        rows.sort { str($0[dateField]) > str($1[dateField]) }
+        return rows
+    }
+
+    /// 本地查询：筛选+排序+分页+规格装饰，毫秒级返回（与 server.js localQuery 同结构）
+    private func localQuery(isOut: Bool, page: Int, rows: Int, f: [String: String], con: String) -> Reply {
+        let all = localRowsFiltered(isOut: isOut, f: f)
+        let from = min((page - 1) * rows, all.count)
+        let to = min(from + rows, all.count)
+        var list: [[String: Any]] = []
+        for i in from..<to {
+            var r = all[i]
+            decorate(&r)
+            list.append(r)
+        }
+        let object: [String: Any] = [
+            "total": all.count, "rows": list,
+            "columns": isOut ? ErpServer.chukuColumns : ErpServer.rukuColumns,
+            "type": isOut ? "chuku" : "ruku", "con": con,
+            "syncedAt": currentSyncedAt
+        ]
+        guard let d = try? JSONSerialization.data(withJSONObject: object, options: []) else {
+            return Reply.text("结果序列化失败")
+        }
+        var r = Reply(); r.body = d; return r
+    }
+
+    /// 本地库存汇总：两表筛选后直接累加，毫秒级（与 server.js localStock 同结构）
+    private func localStock(_ f: [String: String]) -> Reply {
+        let a = localRowsFiltered(isOut: false, f: f)
+        let b = localRowsFiltered(isOut: true, f: f)
+        var map: [String: [String: Any]] = [:]
+        var order: [String] = []
+        addRows(&map, order: &order, rows: a)
+        addRows(&map, order: &order, rows: b)
+        let sorted = order.sorted { x, y in
+            let u = map[x] ?? [:], v = map[y] ?? [:]
+            for k in ["leixing", "daima", "spec", "mingcheng", "cangku"] {
+                let l = str(u[k]), r = str(v[k])
+                let c = l.isEmpty ? "\u{ffff}" : l
+                let d = r.isEmpty ? "\u{ffff}" : r
+                let result = c.localizedStandardCompare(d)
+                if result != .orderedSame { return result == .orderedAscending }
+            }
+            return false
+        }
+        let rows: [[String: Any]] = sorted.compactMap { map[$0] }
+        let scanned: [String: Any] = ["ruku": a.count, "chuku": b.count]
+        let object: [String: Any] = [
+            "rows": rows, "columns": ErpServer.stockColumns, "total": rows.count,
+            "scanned": scanned, "available": scanned, "truncated": false,
+            "syncedAt": currentSyncedAt
+        ]
+        guard let d = try? JSONSerialization.data(withJSONObject: object, options: []) else {
+            return Reply.text("结果序列化失败")
+        }
         var r = Reply(); r.body = d; return r
     }
 
