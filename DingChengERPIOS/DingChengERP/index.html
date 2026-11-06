@@ -302,7 +302,7 @@ function qs(extra){
   [...p.keys()].forEach(k=>{ if(p.get(k)==='') p.delete(k); });
   return p.toString();
 }
-function numFields(){ return new Set(['shuliang','mianji','zhongliang','stockQty','kuan','chang','danjia','jine']); }
+function numFields(){ return new Set(['shuliang','zhongliang','stockQty','kuan','chang','danjia','jine']); }
 
 function renderHead(cols){
   // 库存汇总列宽按百分比（自适应容器，不横滑）；流水页列多，仍用最小宽度 + 横向滚动
@@ -399,7 +399,7 @@ async function load(){
       const sum = k => S.data.reduce((a,r)=>a+(Number(r[k])||0),0);
       const label = S.tab==='ruku' ? '本页入库数量' : S.tab==='chuku' ? '本页出库数量' : '本页数量';
       renderStats([['符合条件记录',fmt(S.total)],[label,fmt(Math.abs(sum('shuliang')))],
-        ['本页面积',fmt(sum('mianji'))],['本页重量',fmt(sum('zhongliang'))]]);
+        ['本页实际重量',fmt(sum('zhongliang'))]]);
       showNote(false);
       const pages = Math.max(1, Math.ceil(S.total/S.rows));
       $('#pageInfo').textContent = `第 ${S.page} / ${fmt(pages)} 页 · 共 ${fmt(S.total)} 条`;
