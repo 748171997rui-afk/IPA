@@ -326,7 +326,7 @@ function renderBody(rows, cols){
   const mobile = document.documentElement.classList.contains('mobile-mode');
   if(mobile){
     const qtyKey = S.tab==='stock' ? 'stockQty' : 'shuliang';
-    const skip = new Set(['spec','stockQty','shuliang']);
+    const skip = new Set(['spec','stockQty','shuliang','shiji_zhongliang']);
     $('#cardWrap').innerHTML = rows.map(r=>{
       const lv = S.tab==='stock' ? lowLevel(Number(r.stockQty)) : 0;
       const cls = lv===2 ? ' emptyq' : lv===1 ? ' low' : '';
@@ -334,7 +334,10 @@ function renderBody(rows, cols){
         r.chukushijian || '—');
       const qty = r[qtyKey]!==undefined
         ? `<span class="mq"><b>${S.tab==='stock'?'库存数量':'数量'}：</b>${esc(fmt(r[qtyKey]))}</span>` : '';
-      const meta = qty + cols.filter(c=>!skip.has(c[0]) && r[c[0]]!=='' && r[c[0]]!=null)
+      // 出入库卡片：实际重量与数量并列高亮显示（此前排在第 8 列被截掉）
+      const w = S.tab!=='stock' && r.shiji_zhongliang!==undefined && r.shiji_zhongliang!=='' && r.shiji_zhongliang!=null
+        ? `<span class="mq"><b>实际重量：</b>${esc(fmt(r.shiji_zhongliang))}</span>` : '';
+      const meta = qty + w + cols.filter(c=>!skip.has(c[0]) && r[c[0]]!=='' && r[c[0]]!=null)
         .slice(0,5)
         .map(c=>`<span><b>${esc(c[1])}：</b>${esc(fmt(r[c[0]]))}</span>`).join('');
       return `<div class="mcard${cls}"><div class="top"><div class="spec">${esc(title)}</div></div><div class="meta">${meta}</div></div>`;
