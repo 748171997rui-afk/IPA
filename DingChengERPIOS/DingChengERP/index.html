@@ -244,7 +244,18 @@ const S = { tab:'ruku', page:1, rows:20, total:0, columns:[], data:[], view:[], 
 
 // 统一请求：携带同源会话 cookie；会话失效时重新显示登录框
 async function api(url, opt = {}) {
-  const r = await fetch(url, { credentials:'same-origin', ...opt });
+  let r;
+  try {
+    r = await fetch(url, { credentials:'same-origin', ...opt });
+  } catch (e) {
+    // 连接失败：自动重试一次（瞬时抖动/刷新中断），仍失败则给出明确提示
+    await new Promise(s => setTimeout(s, 600));
+    try {
+      r = await fetch(url, { credentials:'same-origin', ...opt });
+    } catch (e2) {
+      throw new Error('无法连接本机服务：请检查 ERP 程序窗口是否还在运行，若已关闭请重新打开程序');
+    }
+  }
   let j = {}; try { j = await r.json(); } catch { j = {}; }
   if (r.status === 401 && j.code === 'NEED_LOGIN') {
     showLogin('登录已失效，请重新登录');
