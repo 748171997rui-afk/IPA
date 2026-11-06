@@ -160,6 +160,20 @@
   #btnLogout{cursor:pointer;font-family:inherit}
   .mobile-mode .overlay{padding:12px;align-items:flex-start;padding-top:12vh}
   .mobile-mode .login-card{max-width:100%;padding:18px 16px 14px}
+  /* ===== 进销动态：文字报告（按仓库叙述出入库，全部铺开，无横竖滚动条） ===== */
+  .filters.jx .f-extra{display:none}
+  /* 进销动态模式：内容区不再限高/内滚，报告随页面自然铺开 */
+  .wrap.jxmode .tablebox{max-height:none;overflow:visible}
+  #jxWrap{display:none}
+  #jxWrap.show{display:block}
+  .jx-report{padding:16px 18px 18px;line-height:1.9;font-size:13.5px;color:#334155}
+  .jx-range{font-weight:600;color:#0f172a;font-size:14px;padding-bottom:6px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  .jx-sec{margin:12px 0 4px;font-weight:600;color:#2563eb;font-size:13px}
+  .jx-item{padding:1px 0}
+  .jx-item b{color:#0f172a}
+  .jx-item.muted{color:#64748b}
+  .mobile-mode .jx-report{padding:12px 14px 14px;font-size:13px;line-height:1.8}
+  .mobile-mode .jx-item{word-break:break-all}
 </style>
 </head>
 <body>
@@ -178,6 +192,7 @@
     <button class="tab active" data-t="ruku">入库记录</button>
     <button class="tab" data-t="chuku">出库记录</button>
     <button class="tab" data-t="stock">库存汇总</button>
+    <button class="tab" data-t="jinxiao" id="tabJinxiao">进销动态</button>
   </div>
 
   <div class="card filters" id="filters">
@@ -185,10 +200,10 @@
     <div class="grid">
       <div><label>开始日期</label><input type="date" id="start"></div>
       <div><label>结束日期</label><input type="date" id="end"></div>
-      <div><label>关键字 / 规格</label><input id="q" placeholder="如：400X2600、400*2600 或 2600"></div>
-      <div><label>仓库</label><input id="cangku" placeholder="库位 / 仓库"></div>
-      <div><label>类型</label><select id="leixing"><option value="">全部类型</option></select></div>
-      <div><label>项目</label><input id="xmmc" placeholder="项目名称"></div>
+      <div class="f-extra"><label>关键字 / 规格</label><input id="q" placeholder="如：400X2600、400*2600 或 2600"></div>
+      <div class="f-extra"><label>仓库</label><input id="cangku" placeholder="库位 / 仓库"></div>
+      <div class="f-extra"><label>类型</label><select id="leixing"><option value="">全部类型</option></select></div>
+      <div class="f-extra"><label>项目</label><input id="xmmc" placeholder="项目名称"></div>
       <div class="actions">
         <button class="btn primary" id="btnSearch">查询</button>
         <button class="btn" id="btnAllTime" title="清空日期，统计全部历史记录">全部时间</button>
@@ -204,6 +219,7 @@
 
   <div class="card tablebox" id="tablebox">
     <div id="tableWrap"><table><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>
+    <div id="jxWrap"></div>
     <div id="cardWrap"></div>
     <div class="empty" id="empty" style="display:none">没有符合条件的记录</div>
   </div>
@@ -272,9 +288,12 @@ function applyResponsive(){
   const next = force || window.innerWidth <= 700;
   const prev = document.documentElement.classList.contains('mobile-mode');
   document.documentElement.classList.toggle('mobile-mode', next);
-  if(prev !== next && S.columns.length && S.view.length){
-    renderBody(S.tab==='stock' ? S.view.slice(0,1000) : S.view, S.columns);
-    setStockMode(S.tab==='stock');
+  if(prev !== next){
+    if(S.tab === 'jinxiao'){ if(S.data.length) renderJinxiao(S.data); }
+    else if(S.columns.length && S.view.length){
+      renderBody(S.tab==='stock' ? S.view.slice(0,1000) : S.view, S.columns);
+      setStockMode(S.tab==='stock');
+    }
   }
 }
 applyResponsive();
@@ -292,11 +311,18 @@ function filters(){
   return { start:$('#start').value, end:$('#end').value, q:$('#q').value.trim(),
     cangku:$('#cangku').value.trim(), leixing:$('#leixing').value.trim(), xmmc:$('#xmmc').value.trim() };
 }
-// 库存数量默认按全部历史累计；流水页签默认近一月。用户手动改过日期后不再自动切换。
+// 库存数量默认按全部历史累计；流水页签默认近一月；进销动态默认当月。用户手动改过日期后不再自动切换。
+function monthStart(){ const d=new Date(); return d.toISOString().slice(0,8)+'01'; }
 function syncDefaultDates(){
   if(S.dateTouched) return;
   if(S.tab==='stock'){ $('#start').value=''; $('#end').value=''; }
+  else if(S.tab==='jinxiao'){ $('#start').value=monthStart(); $('#end').value=today(); }
   else { $('#start').value=monthAgo(); $('#end').value=today(); }
+}
+// 切页签后同步筛选区与页签可见性（进销动态只要日期筛选；三端内置服务均已实现该接口）
+function applyTabUI(){
+  $('#filters').classList.toggle('jx', S.tab==='jinxiao');
+  document.querySelector('.wrap').classList.toggle('jxmode', S.tab==='jinxiao');
 }
 function qs(extra){
   const p = new URLSearchParams({...filters(), ...extra});
@@ -305,6 +331,96 @@ function qs(extra){
 }
 function numFields(){ return new Set(['shuliang','zhongliang','shiji_zhongliang','stockQty','kuan','chang','danjia','jine']); }
 
+// ===== 进销动态文字报告：按仓库汇总「入库多少 / 出库多少 / 哪些库没动」，铺开无滚动条 =====
+const IS_APP = !!(window.DingCheng || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.dingcheng));
+const JX_GROUPS = [
+  { name:'ERP标准库',     cols:[['bz_ruku','入库'],['bz_chuku','出库'],['bz_kucun','库存']], wh:1 },
+  { name:'BB条',          cols:[['bb_ruku','入库'],['bb_chuku','出库'],['bb_kucun','库存']], wh:1 },
+  { name:'EC角铝',        cols:[['ec_ruku','入库'],['ec_chuku','出库'],['ec_kucun','库存']], wh:1 },
+  { name:'原材料(型材库)', cols:[['xc_ruku','入库'],['xc_chuku','出库'],['xc_kucun','库存']], wh:1 },
+  { name:'改制仓',        cols:[['gz_ruku','入库'],['gz_chuku','出库'],['gz_kucun','库存']], wh:1 },
+  { name:'生产车间',      cols:[['sc_ruku','入库'],['sc_wr_chuku','出库·待发货'],['sc_ffl_chuku','出库·废料'],['sc_tbz_chuku','出库·退标准库'],['sc_kucun','库存']], wh:1 },
+  { name:'待发货车间存',  cols:[['dfh_ruku','入库'],['dfh_chuku','出库'],['dfh_kucun','库存']], wh:1 },
+  { name:'虚拟出入库存',  cols:[['xfh_ruku','入库'],['xfh_chuku','出库'],['xfh_kucun','库存']], wh:1 },
+  { name:'项目地出入库',  cols:[['xmc_ruku','入库'],['xmc_chuku','出库'],['xmc_kucun','库存']], wh:1 },
+  { name:'临时仓',        cols:[['ls_ruku','入库'],['ls_fj_chuku','出库·分件'],['ls_ffl_chuku','出库·废料'],['ls_kucun','库存']], wh:1 },
+  { name:'废料库存',      cols:[['fl_ruku','入库'],['fl_chuku','出库'],['fl_kucun','库存']], wh:1 },
+  { name:'置换地库存',    cols:[['zh_ruku','入库'],['zh_chuku','出库'],['zh_kucun','库存']], wh:1 },
+  { name:'原材料进',      cols:[['yc_ruku','入库'],['yc_chuku','出库'],['yc_kucun','库存']], wh:1 },
+  { name:'销售及其他',    cols:[['xs_kucun','销售'],['ybf_kucun','样板房库存'],['dijin_kucun','抵进材料'],['dichu_kucun','抵出材料']] },
+  { name:'进销存核对',    cols:[['temp','进'],['temp','销'],['sum_kucun','存'],['sunHao','损耗'],['temp','平衡检测'],['temp','备注']] }
+];
+// 占位/候选字段：厂商后端当前不返回原材料进字段，先做候选兜底，将来加了自动带出
+function jxVal(r, f){
+  if(f === 'temp') return r.temp;
+  let v = r[f];
+  if(v === undefined && f.indexOf('yc_') === 0){
+    v = r['ycl_' + f.slice(3)];
+    if(v === undefined) v = r['ycl' + f.slice(2)];
+  }
+  return v;
+}
+// 数值：千分位最多 2 位小数（0 返回空串，仅在需要展示时由调用方过滤）
+function jxFmt(v){
+  if(v === null || v === undefined || v === '') return '';
+  const n = Number(v);
+  if(Number.isFinite(n)) return n === 0 ? '' : n.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+  return String(v);
+}
+function jxNum(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
+// 「2026-11-06」→「2026年11月6日」
+function jxDateCN(s){
+  const m = String(s || '').match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  return m ? `${m[1]}年${+m[2]}月${+m[3]}日` : String(s || '');
+}
+// 库存性质列取期末值；发生额列（入库/出库/销售/抵进抵出/损耗）取范围合计
+function jxIsStockCol(name){ return name.indexOf('库存') >= 0 || name === '存'; }
+function renderJinxiao(rows){
+  $('#tableWrap').style.display = 'none'; $('#cardWrap').style.display = 'none';
+  $('#jxWrap').classList.add('show');
+  if(!rows.length){ $('#jxWrap').innerHTML = ''; $('#empty').style.display = 'block'; return; }
+  $('#empty').style.display = 'none';
+  // 升序排列，期末值 = 范围内最后一天
+  const rs = rows.slice().sort((a, b) => String(a.shijian).localeCompare(String(b.shijian)));
+  const last = rs[rs.length - 1];
+  const sumCol = (r, c) => rs.reduce((s, x) => s + jxNum(jxVal(x, c[0])), 0);
+  const stats = JX_GROUPS.map(g => {
+    const items = []; let active = false;
+    g.cols.forEach(c => {
+      if(jxIsStockCol(c[1])){
+        const n = jxNum(jxVal(last, c[0]));
+        if(n) items.push(`期末${c[1]} ${jxFmt(n)}`);
+      } else {
+        const s = sumCol(last, c);
+        if(s){ items.push(`${c[1]} ${jxFmt(s)}`); active = true; }
+      }
+    });
+    const stockTail = items.filter(t => t.indexOf('期末') === 0);
+    return { name: g.name, items: items.filter(t => t.indexOf('期末') !== 0), stockTail, active, wh: !!g.wh };
+  });
+  // 统计范围描述（跟筛选框一致；单天只写一天）
+  const s = $('#start').value, e = $('#end').value;
+  const rangeTxt = s === e ? jxDateCN(s)
+    : `${s ? jxDateCN(s) : '最早'} 至 ${e ? jxDateCN(e) : '至今'}`;
+  const act = stats.filter(g => g.active), inact = stats.filter(g => !g.active);
+  const line = g => {
+    const parts = g.items.concat(g.stockTail);
+    if(g.active) return `<div class="jx-item"><b>${esc(g.name)}：</b>${esc(parts.join('，'))}</div>`;
+    const tail = g.stockTail.length ? `（${esc(g.stockTail.join('，'))}）` : '';
+    const verb = g.wh ? '期间无入库、无出库' : '期间无记录';
+    return `<div class="jx-item muted">${esc(g.name)}：${verb}${tail}</div>`;
+  };
+  $('#jxWrap').innerHTML =
+    `<div class="jx-report">` +
+    `<div class="jx-range">统计范围：${esc(rangeTxt)}（共 ${rs.length} 天）</div>` +
+    (act.length
+      ? `<div class="jx-sec">有出入库（${act.length} 个）</div>` + act.map(line).join('')
+      : `<div class="jx-item">统计范围内所有仓库均无出入库。</div>`) +
+    (inact.length
+      ? `<div class="jx-sec">无出入库（${inact.length} 个）</div>` + inact.map(line).join('')
+      : '') +
+    `</div>`;
+}
 function renderHead(cols){
   // 库存汇总列宽按百分比（自适应容器，不横滑）；流水页列多，仍用最小宽度 + 横向滚动
   const fixed = S.tab === 'stock';
@@ -365,12 +481,13 @@ function renderStats(items){
   $('#stats').innerHTML = items.map(i=>`<div class="card stat"><div class="k">${esc(i[0])}</div><div class="v">${esc(i[1])}</div></div>`).join('');
 }
 function showNote(on){ $('#note').classList.toggle('show', !!on); }
-// 库存汇总不使用分页，页脚换成低库存筛选与图例
+// 库存汇总不使用分页，页脚换成低库存筛选与图例；进销动态同样不分页
 function setStockMode(on){
   document.querySelector('.wrap').classList.toggle('compact', on);
   $('#lowWrap').style.display = on ? 'flex' : 'none';
   $('#legend').style.display = on ? 'flex' : 'none';
-  ['pageSize','prev','next'].forEach(id=>$('#'+id).style.display = on ? 'none' : '');
+  const noPage = on || S.tab === 'jinxiao';
+  ['pageSize','prev','next'].forEach(id=>$('#'+id).style.display = noPage ? 'none' : '');
 }
 
 // 查询进行中：按钮置灰 +「查询中…」（本机数据正在下载/更新时显示「更新中…」）
@@ -400,6 +517,10 @@ function updateSyncInfo(info){
 async function load(){
   if(S.busy) return;
   S.busy = true; setStockMode(S.tab==='stock'); $('#tablebox').classList.add('loading');
+  applyTabUI();
+  // 恢复三个渲染容器的默认可见性（手机端卡片由 mobile-mode CSS 接管），进销动态分支再单独切换
+  $('#tableWrap').style.display = ''; $('#cardWrap').style.display = '';
+  $('#jxWrap').classList.remove('show');
   // 先刷新一次同步状态（本机请求，毫秒级）：后台正在首次下载/更新数据时，按钮显示「更新中…」
   try{
     const m = await api('/api/meta'); S.meta = m;
@@ -410,7 +531,20 @@ async function load(){
   if(syncing) showNote(true), $('#note').textContent = '本机数据正在下载/更新中，本次查询走厂商云会稍慢；更新完成后查询将全部走本机数据（毫秒级）。';
   $('#empty').style.display='none';
   try{
-    if(S.tab==='stock'){
+    if(S.tab==='jinxiao'){
+      const p = new URLSearchParams({ start:$('#start').value, end:$('#end').value });
+      [...p.keys()].forEach(k=>{ if(!p.get(k)) p.delete(k); });
+      const j = await api('/api/jinxiao?'+p.toString());
+      S.data = j.rows || []; S.total = j.total || S.data.length; S.view = S.data;
+      renderJinxiao(S.data);
+      const last = S.data[0] || {};
+      renderStats([['记录(天)',fmt(S.total)],['最新总库存',fmt(jxFmt(last.sum_kucun))],['最新损耗',fmt(jxFmt(last.sunHao))]]);
+      const range = ($('#start').value || '最早') + ' ~ ' + ($('#end').value || '至今');
+      showNote(true);
+      $('#note').textContent = `进销动态 ${range}：文字汇总各仓库入库 / 出库金额与期末库存，实时取自厂商云（60 秒内重复查询走缓存）。入库、出库为范围内合计，库存为期末（最后一天）数值；「无出入库」表示该仓库范围内没有发生额。查全部历史请点【全部时间】。`;
+      $('#pageInfo').textContent = `共 ${fmt(S.total)} 天记录`;
+      $('#prev').disabled = $('#next').disabled = true;
+    } else if(S.tab==='stock'){
       const j = await api('/api/stock?'+qs({}));
       if(j.syncedAt) S._lastSync = { syncedAt: j.syncedAt, lastNew: (S.meta&&S.meta.lastNew)||0 };
       S.columns = j.columns; S.data = j.rows; S.total = j.total;
@@ -456,7 +590,12 @@ async function load(){
 async function exportCsv(){
   try{
     let cols=S.columns, rows=(S.tab==='stock' ? S.view : S.data);
-    if(S.tab!=='stock'){
+    if(S.tab==='jinxiao'){
+      // 全部列（含占位列）按分段顺序导出，一行一天
+      cols = [['shijian','时间'],
+        ...JX_GROUPS.flatMap(g=>g.cols.map(c=>[c[0], g.name+'·'+c[1]]))];
+      rows = S.data;
+    } else if(S.tab!=='stock'){
       const max = (S.meta&&S.meta.exportMaxRows)||5000;
       const j = await api('/api/query?'+qs({type:S.tab,page:1,rows:Math.min(max,S.total||max)}));
       rows = j.rows||[]; cols = j.columns||cols;
@@ -485,9 +624,10 @@ async function exportCsv(){
 
 // 切换页签/类型后不自动查询：清空表格，等用户点「查询」
 function showPendingHint(){
-  const names={ruku:'入库记录',chuku:'出库记录',stock:'库存汇总'};
+  const names={ruku:'入库记录',chuku:'出库记录',stock:'库存汇总',jinxiao:'进销动态'};
   S.data=[]; S.total=0; S.view=[];
-  $('#thead').innerHTML=''; $('#tbody').innerHTML='';
+  $('#thead').innerHTML=''; $('#tbody').innerHTML=''; $('#jxWrap').innerHTML='';
+  $('#jxWrap').classList.remove('show');
   $('#empty').style.display='block';
   $('#empty').textContent='已切换到「'+(names[S.tab]||'')+'」，请点击【查询】加载数据';
   $('#pageInfo').textContent='—'; renderStats([]);
@@ -497,7 +637,7 @@ $('#tabs').addEventListener('click',e=>{
   const b=e.target.closest('.tab'); if(!b) return;
   if(b.dataset.t===S.tab) return;
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  b.classList.add('active'); S.tab=b.dataset.t; S.page=1; syncDefaultDates(); showPendingHint();
+  b.classList.add('active'); S.tab=b.dataset.t; S.page=1; syncDefaultDates(); applyTabUI(); showPendingHint();
 });
 ['start','end'].forEach(id=>$('#'+id).addEventListener('change',()=>{S.dateTouched=true;}));
 $('#leixing').addEventListener('change',()=>{S.page=1;});
@@ -600,10 +740,11 @@ $('#btnLogout').onclick = async ()=>{
     $('#official').href = S.meta.officialStockUrl;
     $('#loginCompany').textContent = S.meta.company;
     const t = new URLSearchParams(location.search).get('tab');
-    if(t && ['ruku','chuku','stock'].includes(t)){
+    if(t && ['ruku','chuku','stock','jinxiao'].includes(t)){
       S.tab = t;
       document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x.dataset.t===t));
     }
+    applyTabUI();
     syncDefaultDates();
     if(S.meta.dataReady && S.meta.syncedAt) S._lastSync = { syncedAt: S.meta.syncedAt, lastNew: S.meta.lastNew||0 };
     updateSyncInfo(S._lastSync);

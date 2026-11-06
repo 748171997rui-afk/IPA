@@ -309,6 +309,7 @@ final class ErpServer {
         if p == "/api/logout" { return logout(req) }
         if p == "/api/query" { return query(req) }
         if p == "/api/stock" { return stock(req) }
+        if p == "/api/jinxiao" { return jinxiao(req) }
         return Reply.json(["error": "not found"], code: 404)
     }
 
@@ -513,6 +514,49 @@ final class ErpServer {
     }
 
     // MARK: - ERP 业务
+
+    /// 进销动态：每天一行的各仓库收发存汇总。全历史仅几百行，实时调厂商
+    /// ControlHandle.ashx?method=jinxiaocun_dongtai，60 秒会话级缓存，不做本地同步。
+    /// 与 Windows EXE 里 server.js 的 /api/jinxiao 同一套规则。
+    private func jinxiao(_ req: Request) -> Reply {
+        let sid = readSid(req)
+        lock.lock()
+        let s = sid.isEmpty ? nil : sessions[sid]
+        lock.unlock()
+        guard let session = s else { return needLogin() }
+        // 只接受合法日期格式，防止把奇怪参数透传给厂商云
+        let start = dateParam(req.params["start"])
+        let end = dateParam(req.params["end"])
+        let key = "jx|\(sid)|\(start)|\(end)"
+        lock.lock()
+        let hit = cache[key]
+        lock.unlock()
+        if let h = hit, Date().timeIntervalSince1970 - h.time < ErpServer.queryCacheSeconds {
+            var r = Reply(); r.body = Data(h.json.utf8); return r
+        }
+        let url = ErpServer.loginURL + "?method=jinxiaocun_dongtai&danwei=" + pct(ErpServer.company)
+            + "&StartDate=" + qenc(start) + "&EndDate=" + qenc(end) + "&sjmsver=20250821000009"
+        guard let text = httpGet(url, cookie: session.cookie, timeout: 25),
+              let d = text.data(using: .utf8),
+              let j = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let rows = j["rows"] as? [[String: Any]] else {
+            return fail(502, "厂商云未返回进销动态数据", "UPSTREAM")
+        }
+        let object: [String: Any] = ["total": Int(num(j["total"])), "rows": rows]
+        guard let out = try? JSONSerialization.data(withJSONObject: object, options: []) else {
+            return Reply.text("结果序列化失败")
+        }
+        let json = String(data: out, encoding: .utf8) ?? "{}"
+        lock.lock()
+        cache[key] = CacheItem(time: Date().timeIntervalSince1970, sid: sid, json: json)
+        lock.unlock()
+        var r = Reply(); r.body = out; return r
+    }
+
+    private func dateParam(_ v: String?) -> String {
+        guard let v = v, !v.isEmpty else { return "" }
+        return v.range(of: "^\\d{4}-\\d{2}-\\d{2}$", options: .regularExpression) != nil ? v : ""
+    }
 
     private struct LoginResult {
         let ok: Bool, message: String, permissions: String, cookie: String
