@@ -209,6 +209,7 @@
   </div>
   <div class="card foot" id="foot" style="margin-top:12px">
     <span id="pageInfo">—</span>
+    <span id="syncInfo" style="color:var(--muted);font-size:11px"></span>
     <label class="chk" id="lowWrap" style="display:none"><input type="checkbox" id="onlyLow"> 只看低库存 &lt;50</label>
     <span class="legend" id="legend" style="display:none">
       <span><i style="background:#fff8e6;border:1px solid #f59e0b"></i>库存 1–49</span>
@@ -302,7 +303,7 @@ function qs(extra){
   [...p.keys()].forEach(k=>{ if(p.get(k)==='') p.delete(k); });
   return p.toString();
 }
-function numFields(){ return new Set(['shuliang','zhongliang','stockQty','kuan','chang','danjia','jine']); }
+function numFields(){ return new Set(['shuliang','zhongliang','shiji_zhongliang','stockQty','kuan','chang','danjia','jine']); }
 
 function renderHead(cols){
   // 库存汇总列宽按百分比（自适应容器，不横滑）；流水页列多，仍用最小宽度 + 横向滚动
@@ -369,13 +370,46 @@ function setStockMode(on){
   ['pageSize','prev','next'].forEach(id=>$('#'+id).style.display = on ? 'none' : '');
 }
 
+// 查询进行中：按钮置灰 +「查询中…」（本机数据正在下载/更新时显示「更新中…」）
+function setBusyUI(b, mode){
+  const bs = $('#btnSearch');
+  if(b){ S._btnText = bs.textContent; bs.textContent = mode || '查询中…'; bs.disabled = true;
+         $('#prev').disabled = $('#next').disabled = true; }
+  else { bs.textContent = S._btnText || '查 询'; bs.disabled = false;
+         if(S.tab !== 'stock'){
+           const pages = Math.max(1, Math.ceil(S.total/S.rows));
+           $('#prev').disabled = S.page <= 1;
+           $('#next').disabled = S.page >= pages;
+         } else { $('#prev').disabled = $('#next').disabled = true; }
+  }
+}
+// 页脚同步状态：数据更新时间 + 新增记录提示（不弹窗）
+function updateSyncInfo(info){
+  const el = $('#syncInfo'); if(!el) return;
+  const t = info && info.syncedAt;
+  if(!t){ el.textContent=''; return; }
+  const d = new Date(t);
+  const hh = String(d.getHours()).padStart(2,'0'), mm = String(d.getMinutes()).padStart(2,'0');
+  const n = info.lastNew;
+  el.textContent = (n > 0 ? `已同步 ${n} 条新记录 · ` : '') + `数据更新于 ${hh}:${mm}`;
+}
+
 async function load(){
   if(S.busy) return;
   S.busy = true; setStockMode(S.tab==='stock'); $('#tablebox').classList.add('loading');
+  // 先刷新一次同步状态（本机请求，毫秒级）：后台正在首次下载/更新数据时，按钮显示「更新中…」
+  try{
+    const m = await api('/api/meta'); S.meta = m;
+    if(m.syncedAt) S._lastSync = { syncedAt:m.syncedAt, lastNew:m.lastNew||0 };
+  }catch(e2){}
+  const syncing = S.meta && S.meta.syncing && !S.meta.dataReady;
+  setBusyUI(true, syncing ? '更新中…' : '查询中…');
+  if(syncing) showNote(true), $('#note').textContent = '本机数据正在下载/更新中，本次查询走厂商云会稍慢；更新完成后查询将全部走本机数据（毫秒级）。';
   $('#empty').style.display='none';
   try{
     if(S.tab==='stock'){
       const j = await api('/api/stock?'+qs({}));
+      if(j.syncedAt) S._lastSync = { syncedAt: j.syncedAt, lastNew: (S.meta&&S.meta.lastNew)||0 };
       S.columns = j.columns; S.data = j.rows; S.total = j.total;
       const low = S.data.filter(r=>lowLevel(Number(r.stockQty))>0);
       S.view = $('#onlyLow').checked ? low : S.data;
@@ -394,12 +428,13 @@ async function load(){
       $('#prev').disabled = $('#next').disabled = true;
     } else {
       const j = await api('/api/query?'+qs({type:S.tab,page:S.page,rows:S.rows}));
+      if(j.syncedAt) S._lastSync = { syncedAt: j.syncedAt, lastNew: (S.meta&&S.meta.lastNew)||0 };
       S.columns = j.columns; S.data = j.rows; S.total = j.total; S.view = S.data;
       renderHead(S.columns); renderBody(S.data, S.columns);
       const sum = k => S.data.reduce((a,r)=>a+(Number(r[k])||0),0);
       const label = S.tab==='ruku' ? '本页入库数量' : S.tab==='chuku' ? '本页出库数量' : '本页数量';
       renderStats([['符合条件记录',fmt(S.total)],[label,fmt(Math.abs(sum('shuliang')))],
-        ['本页实际重量',fmt(sum('zhongliang'))]]);
+        ['本页实际重量',fmt(sum('shiji_zhongliang'))]]);
       showNote(false);
       const pages = Math.max(1, Math.ceil(S.total/S.rows));
       $('#pageInfo').textContent = `第 ${S.page} / ${fmt(pages)} 页 · 共 ${fmt(S.total)} 条`;
@@ -409,7 +444,10 @@ async function load(){
     if(e.message === 'NEED_LOGIN') return;   // api() 已重新弹出登录框
     showNote(true); $('#note').textContent='查询失败：'+e.message;
     $('#tbody').innerHTML=''; $('#empty').style.display='block'; $('#empty').textContent='查询失败：'+e.message;
-  }finally{ S.busy=false; $('#tablebox').classList.remove('loading'); }
+  }finally{
+    S.busy=false; $('#tablebox').classList.remove('loading'); setBusyUI(false);
+    updateSyncInfo(S._lastSync || (S.meta && S.meta.dataReady ? S.meta : null));
+  }
 }
 
 async function exportCsv(){
@@ -442,14 +480,25 @@ async function exportCsv(){
   }catch(e){ if(e.message!=='NEED_LOGIN') alert('导出失败：'+e.message); }
 }
 
+// 切换页签/类型后不自动查询：清空表格，等用户点「查询」
+function showPendingHint(){
+  const names={ruku:'入库记录',chuku:'出库记录',stock:'库存汇总'};
+  S.data=[]; S.total=0; S.view=[];
+  $('#thead').innerHTML=''; $('#tbody').innerHTML='';
+  $('#empty').style.display='block';
+  $('#empty').textContent='已切换到「'+(names[S.tab]||'')+'」，请点击【查询】加载数据';
+  $('#pageInfo').textContent='—'; renderStats([]);
+  $('#prev').disabled=$('#next').disabled=true;
+}
 $('#tabs').addEventListener('click',e=>{
   const b=e.target.closest('.tab'); if(!b) return;
+  if(b.dataset.t===S.tab) return;
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  b.classList.add('active'); S.tab=b.dataset.t; S.page=1; syncDefaultDates(); load();
+  b.classList.add('active'); S.tab=b.dataset.t; S.page=1; syncDefaultDates(); showPendingHint();
 });
 ['start','end'].forEach(id=>$('#'+id).addEventListener('change',()=>{S.dateTouched=true;}));
-$('#leixing').addEventListener('change',()=>{S.page=1;load();});
-$('#onlyLow').addEventListener('change',()=>{S.page=1;load();});
+$('#leixing').addEventListener('change',()=>{S.page=1;});
+$('#onlyLow').addEventListener('change',()=>{S.page=1;});
 // 手机端：筛选默认收起，点标题展开；提示条点一下展开全文
 $('#filterToggle').addEventListener('click',()=>{
   const open = $('#filters').classList.toggle('open');
@@ -519,7 +568,7 @@ async function submitLogin(){
     $('#loginPass').value = '';
     S.meta = await api('/api/meta');
     hideLogin(j.user || name);
-    S.page = 1; S.dateTouched = false; syncDefaultDates(); load();
+    S.page = 1; S.dateTouched = false; syncDefaultDates(); showPendingHint();
   }catch(e){
     err.textContent = e.message || '登录失败'; err.hidden = false;
   }finally{ btn.disabled = false; btn.textContent = '登 录'; }
@@ -553,8 +602,10 @@ $('#btnLogout').onclick = async ()=>{
       document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active', x.dataset.t===t));
     }
     syncDefaultDates();
+    if(S.meta.dataReady && S.meta.syncedAt) S._lastSync = { syncedAt: S.meta.syncedAt, lastNew: S.meta.lastNew||0 };
+    updateSyncInfo(S._lastSync);
     // 已登录直接进入；未登录则用本机记住的账号密码自动登录，失败才弹登录框
-    if(S.meta.loggedIn && S.meta.user){ hideLogin(S.meta.user); load(); }
+    if(S.meta.loggedIn && S.meta.user){ hideLogin(S.meta.user); showPendingHint(); }
     else {
       const saved = loadLogin();
       if(saved && saved.u && saved.p){
@@ -566,7 +617,7 @@ $('#btnLogout').onclick = async ()=>{
           });
           if(r.ok){
             S.meta = await api('/api/meta');
-            hideLogin(S.meta.user || saved.u); load();
+            hideLogin(S.meta.user || saved.u); showPendingHint();
           } else { showLogin(''); }
         }catch(e2){ showLogin(''); }
       } else { showLogin(''); }

@@ -15,22 +15,23 @@ final class ErpServer {
     private static let pageSize = 500
     private static let maxRows = 50000
     private static let cacheSeconds: TimeInterval = 600
+    private static let queryCacheSeconds: TimeInterval = 60
 
     private static let typeOptions = ["标准库", "型材库", "配件库", "拉片库", "待维修库", "半成品库", "成品库", "待拼库", "待清理库", "废料", "拼装", "铝支撑", "铝背楞", "钢背楞", "新型背楞", "爬架", "支撑架", "来料加工", "生产清单", "打包清单", "材料库房"]
     private static let typeOptionsWithData = ["标准库", "型材库", "半成品库", "成品库", "待清理库", "废料", "支撑架", "材料库房"]
-    private static let keywordFields = ["mingcheng", "daima", "erp_pinhao", "beizhu", "cangku", "leixing"]
+    private static let keywordFields = ["mingcheng", "daima", "erp_pinhao", "beizhu", "cangku", "leixing", "laiyuan_telephone", "crkxmmc"]
 
     private static let rukuColumns: [[Any]] = [
         ["rukushijian", "入库时间", 150], ["leixing", "类型", 140], ["mingcheng", "名称", 130],
         ["daima", "编码", 130], ["spec", "规格(宽×长)", 110], ["cangku", "仓库", 100],
-        ["shuliang", "数量", 90], ["mianji", "面积", 90], ["zhongliang", "重量", 90],
+        ["shuliang", "数量", 90], ["shiji_zhongliang", "实际重量", 90],
         ["erp_pinhao", "ERP品号", 110], ["crkxmmc", "项目", 130], ["yonghu", "操作人", 110],
         ["laiyuan_telephone", "来源", 140], ["beizhu", "备注", 180]
     ]
     private static let chukuColumns: [[Any]] = [
         ["chukushijian", "出库时间", 150], ["leixing", "类型", 140], ["mingcheng", "名称", 130],
         ["daima", "编码", 130], ["spec", "规格(宽×长)", 110], ["cangku", "仓库", 100],
-        ["shuliang", "数量", 90], ["mianji", "面积", 90], ["zhongliang", "重量", 90],
+        ["shuliang", "数量", 90], ["shiji_zhongliang", "实际重量", 90],
         ["erp_pinhao", "ERP品号", 110], ["crkxmmc", "项目", 130], ["yonghu", "操作人", 110],
         ["laiyuan_telephone", "来源", 140], ["beizhu", "备注", 180]
     ]
@@ -429,16 +430,32 @@ final class ErpServer {
         let page = max(1, Int(req.params["page"] ?? "") ?? 1)
         let rows = min(5000, max(1, Int(req.params["rows"] ?? "") ?? 20))
         let con = buildCon(isOut: isOut, f: req.params)
+        // 60 秒会话隔离查询缓存：重复点击/翻页回看秒出（dropSession 时自动清理）
+        let qkey = "q|\(sid)|\(isOut ? "chuku" : "ruku")|\(page)|\(rows)|\(con)"
+        lock.lock()
+        let qhit = cache[qkey]
+        lock.unlock()
+        if let h = qhit, Date().timeIntervalSince1970 - h.time < ErpServer.queryCacheSeconds {
+            var r = Reply(); r.body = Data(h.json.utf8); return r
+        }
         guard let g = grid(isOut: isOut, page: page, rows: rows, con: con, cookie: session.cookie) else {
             return Reply.text("上游查询失败")
         }
         var list = (g["rows"] as? [[String: Any]]) ?? []
         for i in 0..<list.count { decorate(&list[i]) }
-        return Reply.json([
+        let object: [String: Any] = [
             "total": Int(num(g["total"])), "rows": list,
             "columns": isOut ? ErpServer.chukuColumns : ErpServer.rukuColumns,
             "type": isOut ? "chuku" : "ruku", "con": con
-        ] as [String: Any])
+        ]
+        guard let d = try? JSONSerialization.data(withJSONObject: object, options: []) else {
+            return Reply.text("结果序列化失败")
+        }
+        let json = String(data: d, encoding: .utf8) ?? "{}"
+        lock.lock()
+        cache[qkey] = CacheItem(time: Date().timeIntervalSince1970, sid: sid, json: json)
+        lock.unlock()
+        var reply = Reply(); reply.body = d; return reply
     }
 
     private func stock(_ req: Request) -> Reply {
