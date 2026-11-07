@@ -42,8 +42,6 @@ jobs:
           set -e
           test -f project.yml
           test -f DingChengERP/Info.plist
-          test -f DingChengERP/index.html
-          test -f DingChengERP/ErpServer.swift
           test -f DingChengERP/ViewController.swift
           test -f DingChengERP/AppDelegate.swift
           ls -la DingChengERP
@@ -79,11 +77,6 @@ jobs:
             echo "::error::未找到 .app 产物"
             find build -maxdepth 6 -name '*.app' -o -name '*.xcarchive' | head -20
             exit 1
-          fi
-          # 兜底：若 XcodeGen 没把 index.html 放进 Bundle，手动补入（未签名包可直接改）
-          if [ ! -f "$APP/index.html" ]; then
-            cp DingChengERP/index.html "$APP/index.html"
-            echo "已补入内置网页 index.html"
           fi
           echo "--- .app 关键内容 ---"
           ls -lh "$APP" | head -30

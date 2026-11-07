@@ -1,25 +1,23 @@
 import UIKit
 import WebKit
 
-/// 鼎城 ERP：App 自带只读 ERP 服务，打开即在 127.0.0.1 起端口，
-/// 由 App 自己直连厂商云，页面从 App 内部加载。
-/// 不依赖电脑、不依赖局域网、不需要填任何服务器地址。
+/// 鼎城 ERP：App 直接加载 Cloudflare 线上查询页（https://dc.biubiu.kdns.fr/）。
+/// 以后功能更新只需部署 Cloudflare，App 无需重新发版。
 /// 账号密码只由网页登录框输入，App 不保存任何凭证。
 final class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
 
     private let brand = UIColor(red: 0.043, green: 0.541, blue: 0.239, alpha: 1.0)
-    private let server = ErpServer()
+    private let baseURL = URL(string: "https://dc.biubiu.kdns.fr/")!
 
     private var webView: WKWebView!
     private var progress: UIProgressView!
     private var progressObservation: NSKeyValueObservation?
-    private var localPort = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = brand
         setupUI()
-        startLocalServer()
+        loadCloudPage()
     }
 
     private func setupUI() {
@@ -97,34 +95,20 @@ final class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate
         }
     }
 
-    private func startLocalServer() {
-        server.start(completion: { [weak self] port in
-            guard let self = self else { return }
-            self.localPort = port
-            guard let url = URL(string: "http://127.0.0.1:\(port)/m.html") else { return }
-            let req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
-            self.webView.load(req)
-        }, failure: { [weak self] message in
-            guard let self = self else { return }
-            self.showError("本机服务启动失败\n\n" + message + "\n\n请关闭 App 后重新打开。", canRetry: true)
-        })
+    private func loadCloudPage() {
+        let req = URLRequest(url: baseURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        webView.load(req)
     }
 
     @objc private func reloadPage() {
-        if localPort > 0, let url = URL(string: "http://127.0.0.1:\(localPort)/m.html") {
-            webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
-        } else {
-            startLocalServer()
-        }
+        loadCloudPage()
     }
 
     private func showError(_ message: String, canRetry: Bool) {
         let ac = UIAlertController(title: "连接失败", message: message, preferredStyle: .alert)
         if canRetry {
-            ac.addAction(UIAlertAction(title: "重新启动", style: .default) { [weak self] _ in
-                guard let self = self else { return }
-                self.server.stop()
-                self.startLocalServer()
+            ac.addAction(UIAlertAction(title: "重新加载", style: .default) { [weak self] _ in
+                self?.loadCloudPage()
             })
         }
         ac.addAction(UIAlertAction(title: "关闭", style: .cancel))
@@ -143,7 +127,7 @@ final class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate
             decisionHandler(.allow)
             return
         }
-        if url.host == "127.0.0.1" || url.host == "localhost" {
+        if url.host == "dc.biubiu.kdns.fr" {
             decisionHandler(.allow)
         } else {
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
@@ -152,7 +136,7 @@ final class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        showError("无法打开本机查询页\n\n请点「重新启动」再试一次。\n\n\(error.localizedDescription)", canRetry: true)
+        showError("无法连接线上服务\n\n请检查网络后点「重新加载」再试一次。\n\n\(error.localizedDescription)", canRetry: true)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
