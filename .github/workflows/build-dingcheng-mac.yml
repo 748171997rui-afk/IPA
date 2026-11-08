@@ -1,0 +1,98 @@
+name: Build DingCheng ERP macOS Intel
+
+# 与仓库里 TVBox / iOS 的工作流完全隔离，只在鼎城 ERP Mac 目录变动时触发。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'DingChengERPMac/**'
+      - '.github/workflows/build-dingcheng-mac.yml'
+
+concurrency:
+  group: dingcheng-mac
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-13 已于 2025-12-04 退役；macos-15-intel 是 GitHub 目前唯一剩余的
+    # 标准 Intel (x86_64) runner，正好用来组装并验证 darwin-x64 产物。
+    # 产物本身最低支持 macOS 10.15，在 macOS 13 Ventura / Intel 上可直接运行。
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          uname -m
+          node --version
+          xcodebuild -version 2>/dev/null || true
+
+      - name: Verify sources
+        run: |
+          set -e
+          test -f DingChengERPMac/build-mac.js
+          test -f DingChengERPMac/icon-master.png
+          test -f DingChengERPMac/app/main.js
+          test -f DingChengERPMac/app/package.json
+          test -f DingChengERPMac/app/preload.js
+          test -f DingChengERPMac/app/splash.html
+          test -f DingChengERPMac/app/web/index.html
+          test -f DingChengERPMac/app/web/server.js
+          test -f DingChengERPMac/app/web/config.json
+          echo "--- app 源码文件 ---"
+          find DingChengERPMac/app -type f | sort
+
+      - name: Download Electron 22.3.27 darwin-x64
+        run: |
+          set -e
+          mkdir -p DingChengERPMac/build-src
+          Z="DingChengERPMac/build-src/electron.zip"
+          V="22.3.27"
+          F="electron-v${V}-darwin-x64.zip"
+          if curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 600 \
+               -o "$Z" "https://github.com/electron/electron/releases/download/v${V}/${F}"; then
+            echo "从 GitHub Release 下载成功"
+          else
+            echo "GitHub 下载失败，改用 npmmirror 镜像"
+            curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 --max-time 600 \
+              -o "$Z" "https://registry.npmmirror.com/-/binary/electron/${V}/${F}"
+          fi
+          SIZE=$(stat -f%z "$Z")
+          echo "electron.zip: $SIZE bytes"
+          test "$SIZE" -gt 60000000 || { echo "::error::运行时压缩包过小，疑似下载不完整"; exit 1; }
+          unzip -t "$Z" | tail -2
+
+      - name: Assemble .app / zip / dmg
+        working-directory: DingChengERPMac
+        run: |
+          set -e
+          node build-mac.js
+          echo "--- dist ---"
+          ls -lh dist/
+
+      - name: Verify package integrity
+        working-directory: DingChengERPMac
+        run: |
+          set -e
+          cat dist/build-info.json
+          echo "--- zip 结构（前 20 项）---"
+          unzip -l dist/DingChengERP-Mac-Intel.zip | head -24
+          echo "--- dmg 校验 ---"
+          hdiutil imageinfo dist/DingChengERP-Mac-Intel.dmg | grep -E 'Format|Checksum Type|Size Information' -A3 || true
+          echo "--- 确认无符号链接丢失 ---"
+          unzip -Z dist/DingChengERP-Mac-Intel.zip | grep -c '^l' || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DingChengERP-Mac-Intel
+          path: |
+            DingChengERPMac/dist/DingChengERP-Mac-Intel.zip
+            DingChengERPMac/dist/DingChengERP-Mac-Intel.dmg
+            DingChengERPMac/dist/build-info.json
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "鼎城 ERP 库存查询",
+  "short_name": "鼎城ERP",
+  "description": "江西鼎城铝模科技有限公司 · 库存 / 入库 / 出库查询",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#0b8a3d",
+  "icons": [
+    { "src": "/icon-32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/icon-64.png", "sizes": "64x64", "type": "image/png" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" }
+  ]
+}

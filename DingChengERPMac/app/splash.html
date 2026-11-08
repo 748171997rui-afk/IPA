@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>鼎城 ERP · 开机数据自检</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden}
+  body{
+    font:14px/1.6 "Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;color:#eef2ff;
+    background:radial-gradient(760px 420px at 6% -18%,rgba(70,110,255,.32) 0%,transparent 66%),
+               radial-gradient(620px 420px at 100% 110%,rgba(122,94,230,.24) 0%,transparent 70%),
+               linear-gradient(160deg,#141d46 0%,#0e1636 58%,#0a1029 100%);
+    -webkit-app-region:drag;user-select:none;-webkit-font-smoothing:antialiased;
+  }
+  /* 右下极淡同心圆只做层次，不做装饰 */
+  .glow{position:absolute;right:-90px;bottom:-150px;width:320px;height:320px;border-radius:50%;
+    border:1px solid rgba(150,180,255,.07);
+    box-shadow:0 0 0 46px rgba(150,180,255,.017),0 0 0 94px rgba(150,180,255,.011)}
+  .box{position:relative;height:100%;display:flex;flex-direction:column;padding:34px 42px 24px}
+  /* 品牌区与状态区之间一道极淡分隔线，纯层次、不抢视线 */
+  .box::before{content:'';position:absolute;top:90px;left:42px;right:42px;height:1px;
+    background:linear-gradient(90deg,rgba(160,190,255,.20),rgba(160,190,255,.03))}
+  .brand{display:flex;align-items:center;gap:14px}
+  .mark{width:42px;height:42px;border-radius:11px;
+    background:linear-gradient(145deg,#4b87ff,#2f63ee);
+    border:1px solid rgba(255,255,255,.26);color:#fff;font-size:21px;font-weight:500;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 6px 18px rgba(47,99,238,.30);letter-spacing:0}
+  .name{font-size:19px;font-weight:600;letter-spacing:1.2px;line-height:1.3;color:#f4f7ff}
+  .company{font-size:10.5px;color:rgba(200,214,255,.48);letter-spacing:.8px;margin-top:3px}
+  .stage{margin-top:30px}
+  .title{font-size:17px;font-weight:500;letter-spacing:.2px;min-height:26px;color:#eef2ff;transition:color .2s}
+  .title.done{color:#a8c6ff}
+  .detail{margin-top:4px;font-size:12px;color:rgba(200,214,255,.50);min-height:20px}
+  .bar{margin-top:16px;height:2px;width:100%;border-radius:2px;
+    background:rgba(160,190,255,.15);overflow:hidden}
+  .bar i{display:block;height:100%;width:0;border-radius:2px;
+    background:linear-gradient(90deg,#4b87ff,#a8c6ff);transition:width .35s ease}
+  .bar.indet i{width:30%;animation:run 1.7s ease-in-out infinite}
+  @keyframes run{0%{transform:translateX(-110%)}100%{transform:translateX(360%)}}
+  .barline{display:flex;justify-content:space-between;margin-top:9px;font-size:10px;
+    color:rgba(190,206,255,.38);letter-spacing:.4px}
+  .metrics{display:flex;gap:34px;margin-top:20px;font-size:10.5px;
+    color:rgba(190,206,255,.40);letter-spacing:.4px}
+  .metrics b{display:block;color:#eaf0ff;font-size:13.5px;font-weight:500;
+    letter-spacing:0;margin-top:2px}
+  .foot{margin-top:auto;display:flex;justify-content:space-between;align-items:center;
+    font-size:10px;color:rgba(190,206,255,.32);letter-spacing:.3px}
+  .skip{-webkit-app-region:no-drag;cursor:pointer;border:1px solid rgba(160,190,255,.22);
+    border-radius:7px;padding:5px 12px;color:rgba(220,230,255,.62);transition:.18s}
+  .skip:hover{background:rgba(120,160,255,.12);color:#f4f7ff}
+  .skip[hidden]{display:none}
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="box">
+    <div class="brand">
+      <div class="mark">鼎</div>
+      <div>
+        <div class="name">鼎城 ERP</div>
+        <div class="company">江西鼎城铝模科技有限公司</div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="title" id="bootTitle">正在启动本机服务，请稍候…</div>
+      <div class="detail" id="bootDetail">准备检查本地数据与云端差异</div>
+      <div class="bar indet" id="bootBar"><i id="bootBarFill"></i></div>
+      <div class="barline"><span id="bootPhase">数据自检</span><span id="bootPct">请稍候</span></div>
+    </div>
+
+    <div class="metrics">
+      <div>本地记录<b id="bootRows">—</b></div>
+      <div>云端分页<b id="bootPages">—</b></div>
+      <div>已用时间<b id="bootTime">0.0 s</b></div>
+    </div>
+
+    <div class="foot">
+      <span id="bootFoot">本机只读查询 · 有更新才下载，无更新自动进入</span>
+      <span class="skip" id="bootSkip">跳过等待 ›</span>
+    </div>
+  </div>
+
+<script>
+(function(){
+  var api = window.dcBootApi;
+  var $ = function(id){ return document.getElementById(id); };
+  var num = function(n){ try { return Number(n||0).toLocaleString('zh-CN'); } catch(e){ return String(n||0); } };
+  function paint(s){
+    if(!s) return;
+    $('bootTitle').textContent = s.title || '正在启动…';
+    $('bootTitle').className = 'title' + (s.phase === 'done' ? ' done' : '');
+    $('bootDetail').textContent = s.detail || '';
+    $('bootPhase').textContent = s.stage || '数据自检';
+    $('bootRows').textContent = s.local ? num(s.local) + ' 条' : '—';
+    $('bootPages').textContent = s.pages ? num(s.pages) + ' 页' : '—';
+    $('bootTime').textContent = (Number(s.elapsed)||0).toFixed(1) + ' s';
+    $('bootFoot').textContent = s.foot || '本机只读查询 · 有更新才下载，无更新自动进入';
+    $('bootSkip').hidden = s.skip === false;
+    var bar = $('bootBar'), fill = $('bootBarFill');
+    if(s.percent === null || s.percent === undefined){
+      bar.classList.add('indet'); fill.style.width = '';
+      $('bootPct').textContent = s.pctText || '进行中';
+    } else {
+      bar.classList.remove('indet');
+      fill.style.width = Math.max(0, Math.min(100, s.percent)) + '%';
+      $('bootPct').textContent = Math.round(Math.max(0, Math.min(100, s.percent))) + '%';
+    }
+  }
+  if(api){
+    api.onState(paint);
+    $('bootSkip').onclick = function(){ api.skip(); };
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "dingcheng-erp-desktop",
+  "productName": "鼎城 ERP 桌面版",
+  "version": "2.2.0",
+  "description": "江西鼎城铝模科技有限公司 · 本机只读库存 / 出入库查询",
+  "main": "main.js",
+  "author": "江西鼎城铝模科技有限公司",
+  "license": "UNLICENSED",
+  "private": true
+}
